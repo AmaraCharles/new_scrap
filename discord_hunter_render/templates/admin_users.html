@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>User Management — Discord Link Hunter</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0b0d12;--bg2:#12151e;--bg3:#1a1e2a;
+  --border:rgba(255,255,255,0.06);--border2:rgba(255,255,255,0.12);--border3:rgba(255,255,255,0.2);
+  --accent:#5865F2;--accent-h:#4752c4;
+  --green:#3ba55c;--green-bg:rgba(59,165,92,0.1);
+  --red:#ed4245;--red-bg:rgba(237,66,69,0.1);
+  --yellow:#faa61a;--yellow-bg:rgba(250,166,26,0.1);
+  --text:#e3e5eb;--muted:#7b8199;--subtle:#4a4f6a;
+  --mono:'Space Mono',monospace;--sans:'DM Sans',sans-serif;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;min-height:100vh}
+header{background:var(--bg2);border-bottom:1px solid var(--border);padding:14px 28px;display:flex;align-items:center;gap:12px}
+.logo{width:32px;height:32px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px}
+header h1{font-size:15px;font-weight:600}
+header .back{margin-left:auto;color:var(--muted);font-size:12px;text-decoration:none;font-family:var(--mono);transition:color 0.15s}
+header .back:hover{color:var(--text)}
+.container{max-width:900px;margin:0 auto;padding:28px 20px}
+.panel{background:var(--bg2);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:24px}
+.panel-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.panel-head h2{font-size:13px;font-weight:600}
+.panel-body{padding:18px}
+input[type=text],input[type=password],select{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;transition:border 0.15s}
+input:focus,select:focus{border-color:rgba(88,101,242,0.5)}
+.form-row{display:grid;grid-template-columns:1fr 1fr 140px auto;gap:10px;align-items:end}
+@media(max-width:640px){.form-row{grid-template-columns:1fr}}
+.form-row label,.field label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}
+.form-row input,.form-row select,.field input{width:100%}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 16px;border-radius:8px;font-family:var(--sans);font-size:12px;font-weight:600;cursor:pointer;border:none;transition:all 0.15s}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent-h)}
+.btn-danger{background:var(--red-bg);border:1px solid rgba(237,66,69,0.25);color:var(--red)}
+.btn-danger:hover{background:rgba(237,66,69,0.2)}
+.btn-warn{background:var(--yellow-bg);border:1px solid rgba(250,166,26,0.25);color:var(--yellow)}
+.btn-warn:hover{background:rgba(250,166,26,0.18)}
+.btn-ghost{background:var(--bg3);border:1px solid var(--border);color:var(--muted)}
+.btn-ghost:hover{border-color:var(--border2);color:var(--text)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+thead th{background:var(--bg3);padding:9px 14px;text-align:left;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border)}
+tbody tr{border-bottom:1px solid var(--border);transition:background 0.1s}
+tbody tr:hover{background:rgba(255,255,255,0.02)}
+tbody tr:last-child{border-bottom:none}
+td{padding:10px 14px;vertical-align:middle}
+.td-user{font-family:var(--mono);font-weight:700;font-size:12px}
+.td-date,.td-hist{color:var(--muted);font-family:var(--mono);font-size:11px}
+.role-badge{display:inline-block;padding:2px 9px;border-radius:4px;font-size:11px;font-weight:600;font-family:var(--mono)}
+.role-admin{background:rgba(88,101,242,0.15);color:#a5b4fc;border:1px solid rgba(88,101,242,0.25)}
+.role-user{background:var(--bg3);color:var(--muted);border:1px solid var(--border)}
+.action-cell{display:flex;gap:6px;flex-wrap:wrap}
+.toast{position:fixed;bottom:24px;right:24px;background:var(--bg3);border:1px solid var(--border2);border-radius:10px;padding:10px 16px;font-size:13px;z-index:999;transform:translateY(20px);opacity:0;transition:all 0.2s;pointer-events:none}
+.toast.show{transform:translateY(0);opacity:1}
+.toast.success{border-color:rgba(59,165,92,0.35);color:var(--green)}
+.toast.error{border-color:rgba(237,66,69,0.35);color:var(--red)}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:500;display:none;align-items:center;justify-content:center}
+.modal-overlay.open{display:flex}
+.modal{background:var(--bg2);border:1px solid var(--border2);border-radius:14px;padding:28px;width:360px;max-width:95vw}
+.modal h3{font-size:15px;font-weight:600;margin-bottom:6px}
+.modal .sub{font-size:12px;color:var(--muted);margin-bottom:18px}
+.modal .field{margin-bottom:12px}
+.modal-btns{display:flex;gap:10px;margin-top:18px;justify-content:flex-end}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">🎯</div>
+  <h1>User Management</h1>
+  <a href="/" class="back">← Back to app</a>
+</header>
+<div class="container">
+
+  <div class="panel">
+    <div class="panel-head"><h2>➕ Add New User</h2></div>
+    <div class="panel-body">
+      <div class="form-row">
+        <div><label>Username</label><input type="text" id="new-username" placeholder="e.g. john123" autocomplete="off"></div>
+        <div><label>Password</label><input type="password" id="new-password" placeholder="min 6 characters" autocomplete="new-password"></div>
+        <div><label>Role</label><select id="new-role"><option value="user">User</option><option value="admin">Admin</option></select></div>
+        <div><label>&nbsp;</label><button class="btn btn-primary" onclick="addUser()">Add User</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>👥 Active Users</h2></div>
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th><th>Role</th><th>Credits</th><th>Created</th>
+          <th>Seen (total)</th><th>Blocked (&lt;30d)</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="users-tbody">
+        <tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>🔑 Change My Password</h2></div>
+    <div class="panel-body">
+      <div class="form-row" style="grid-template-columns:1fr 1fr auto">
+        <div><label>Current Password</label><input type="password" id="cur-pw" placeholder="current password"></div>
+        <div><label>New Password</label><input type="password" id="new-pw" placeholder="min 6 characters"></div>
+        <div><label>&nbsp;</label><button class="btn btn-ghost" onclick="changeOwnPw()">Update</button></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Reset password modal -->
+<div class="modal-overlay" id="reset-modal">
+  <div class="modal">
+    <h3>Reset Password</h3>
+    <p class="sub">Set a new password for <strong id="reset-target-label"></strong></p>
+    <div class="field"><label>New Password</label><input type="password" id="reset-new-pw" placeholder="min 6 characters"></div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('reset-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="doResetPw()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Credits modal -->
+<div class="modal-overlay" id="credits-modal">
+  <div class="modal">
+    <h3>Manage Scrape Credits</h3>
+    <p class="sub">User: <strong id="credits-target-label"></strong> &nbsp;·&nbsp; Current: <strong id="credits-current-label"></strong></p>
+    <div class="field">
+      <label>Action</label>
+      <select id="credits-action" style="width:100%">
+        <option value="add">Add credits (top up)</option>
+        <option value="set">Set credits (exact amount)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Amount</label>
+      <input type="number" id="credits-amount" min="0" value="10" style="width:100%">
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:-4px;line-height:1.6">
+      Each scrape run costs <strong>1 credit</strong>. Admins have unlimited credits and are never charged.
+    </div>
+    <div class="modal-btns">
+      <button class="btn btn-ghost" onclick="closeModal('credits-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="doManageCredits()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script>
+let resetTarget = null;
+
+async function loadUsers() {
+  const res  = await fetch('/api/admin/users');
+  if (!res.ok) return;
+  const data = await res.json();
+  const tbody = document.getElementById('users-tbody');
+  const entries = Object.entries(data);
+  if (!entries.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No users</td></tr>';
+    return;
+  }
+  tbody.innerHTML = entries.map(([u, info]) => {
+    const isAdmin   = info.role === 'admin';
+    const credits   = info.scrape_credits;
+    const credLabel = isAdmin ? '<span style="color:var(--green);font-family:var(--mono);font-size:12px">∞ admin</span>'
+                              : `<span style="font-family:var(--mono);font-size:13px;font-weight:700;color:${credits===0?'var(--red)':credits<=3?'var(--yellow)':'var(--text)'}">${credits}</span>`;
+    return `
+    <tr>
+      <td class="td-user">${esc(u)}</td>
+      <td><span class="role-badge role-${esc(info.role)}">${esc(info.role)}</span></td>
+      <td>${credLabel}${!isAdmin?`<button class="btn btn-ghost" style="font-size:10px;padding:3px 8px;margin-left:8px" onclick="openCreditsModal('${esc(u)}',${credits})">Edit</button>`:''}</td>
+      <td class="td-date">${esc((info.created||'').split('T')[0]||'—')}</td>
+      <td class="td-hist">${info.seen_total || 0}</td>
+      <td class="td-hist">${info.seen_active || 0}</td>
+      <td class="action-cell">
+        <button class="btn btn-ghost"  style="font-size:11px;padding:5px 10px" onclick="openResetModal('${esc(u)}')">Reset PW</button>
+        <button class="btn btn-warn"   style="font-size:11px;padding:5px 10px" onclick="clearHistory('${esc(u)}')">Clear History</button>
+        <button class="btn btn-danger" style="font-size:11px;padding:5px 10px" onclick="deleteUser('${esc(u)}')">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function addUser() {
+  const username = document.getElementById('new-username').value.trim();
+  const password = document.getElementById('new-password').value;
+  const role     = document.getElementById('new-role').value;
+  const res  = await fetch('/api/admin/users', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password,role})});
+  const data = await res.json();
+  if (res.ok) { toast(`✓ User "${username}" created`,'success'); document.getElementById('new-username').value=''; document.getElementById('new-password').value=''; loadUsers(); }
+  else toast(data.error,'error');
+}
+
+async function deleteUser(username) {
+  if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+  const res  = await fetch(`/api/admin/users/${encodeURIComponent(username)}`,{method:'DELETE'});
+  const data = await res.json();
+  if (res.ok) { toast(`✓ "${username}" deleted`,'success'); loadUsers(); }
+  else toast(data.error,'error');
+}
+
+async function clearHistory(username) {
+  if (!confirm(`Clear server history for "${username}"?\nThey will see all servers as new again.`)) return;
+  const res  = await fetch(`/api/admin/users/${encodeURIComponent(username)}/clear-history`,{method:'POST'});
+  const data = await res.json();
+  if (res.ok) { toast(`✓ History cleared for "${username}"`,'success'); loadUsers(); }
+  else toast(data.error,'error');
+}
+
+function openResetModal(username) {
+  resetTarget = username;
+  document.getElementById('reset-target-label').textContent = username;
+  document.getElementById('reset-new-pw').value = '';
+  document.getElementById('reset-modal').classList.add('open');
+}
+function closeModal(id) { document.getElementById(id).classList.remove('open'); resetTarget = null; }
+
+async function doResetPw() {
+  const pw  = document.getElementById('reset-new-pw').value;
+  const res = await fetch(`/api/admin/users/${encodeURIComponent(resetTarget)}/password`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+  const data = await res.json();
+  if (res.ok) { toast(`✓ Password reset for "${resetTarget}"`,'success'); closeModal('reset-modal'); }
+  else toast(data.error,'error');
+}
+
+async function changeOwnPw() {
+  const current      = document.getElementById('cur-pw').value;
+  const new_password = document.getElementById('new-pw').value;
+  const res  = await fetch('/api/me/password',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({current,new_password})});
+  const data = await res.json();
+  if (res.ok) { toast('✓ Password updated','success'); document.getElementById('cur-pw').value=''; document.getElementById('new-pw').value=''; }
+  else toast(data.error,'error');
+}
+
+let creditsTarget = null;
+
+function openCreditsModal(username, current) {
+  creditsTarget = username;
+  document.getElementById('credits-target-label').textContent  = username;
+  document.getElementById('credits-current-label').textContent = current;
+  document.getElementById('credits-amount').value = 10;
+  document.getElementById('credits-action').value = 'add';
+  document.getElementById('credits-modal').classList.add('open');
+}
+
+async function doManageCredits() {
+  const action = document.getElementById('credits-action').value;
+  const amount = parseInt(document.getElementById('credits-amount').value, 10);
+  if (isNaN(amount) || amount < 0) { toast('Enter a valid number', 'error'); return; }
+  const res  = await fetch(`/api/admin/users/${encodeURIComponent(creditsTarget)}/credits`, {
+    method: 'PUT', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ action, amount })
+  });
+  const data = await res.json();
+  if (res.ok) {
+    toast(`✓ ${creditsTarget} now has ${data.credits} credits`, 'success');
+    closeModal('credits-modal');
+    loadUsers();
+  } else {
+    toast(data.error, 'error');
+  }
+}
+
+document.getElementById('reset-modal').addEventListener('click',   e => { if(e.target===e.currentTarget) closeModal('reset-modal'); });
+document.getElementById('credits-modal').addEventListener('click', e => { if(e.target===e.currentTarget) closeModal('credits-modal'); });
+
+let toastTimer;
+function toast(msg, type='') {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.className = `toast show ${type}`;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.className='toast', 3000);
+}
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+loadUsers();
+</script>
+</body>
+</html>
