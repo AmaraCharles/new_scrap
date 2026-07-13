@@ -291,23 +291,68 @@ def add_result(code, source, context=""):
     })
     return True
 
-def http_get(url, headers=None, timeout=15, retries=3, rate_wait=3):
+# ── Proxy configuration ──────────────────────────────────────────
+# Set WEBSHARE_USER and WEBSHARE_PASS as env vars on Render.
+# Get free credentials at webshare.io (10 proxies, 1GB/mo free tier).
+# Without these set, http_get falls back to direct (will get 403 on cloud).
+PROXY_USER = os.environ.get("WEBSHARE_USER", "")
+PROXY_PASS = os.environ.get("WEBSHARE_PASS", "")
+PROXY_HOST = "p.webshare.io"
+PROXY_PORT = "80"
+
+# Rotate through different user-agents to reduce fingerprinting
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+]
+
+def _get_proxy_handler():
+    """Build a urllib proxy handler from Webshare credentials, or None if not configured."""
+    if not PROXY_USER or not PROXY_PASS:
+        return None
+    proxy_url = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+    return urllib.request.ProxyHandler({
+        "http":  proxy_url,
+        "https": proxy_url,
+    })
+
+def http_get(url, headers=None, timeout=20, retries=3, rate_wait=3):
     """
-    rate_wait: seconds to sleep on a 429 before retrying.
-    Keep low (2-4) for directories, higher (8-15) for search engines.
+    General HTTP GET. Routes through Webshare residential proxy if
+    WEBSHARE_USER / WEBSHARE_PASS are set, otherwise direct.
+    rate_wait: seconds to sleep on 429 before retry.
     """
     base_headers = {
-        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent":      random.choice(USER_AGENTS),
         "Accept":          "text/html,application/xhtml+xml,application/json,*/*",
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
     }
     if headers:
         base_headers.update(headers)
+
+    proxy_handler = _get_proxy_handler()
+    if proxy_handler:
+        opener = urllib.request.build_opener(proxy_handler)
+    else:
+        opener = urllib.request.build_opener()
+
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, headers=base_headers)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return resp.read().decode("utf-8", errors="ignore")
+            with opener.open(req, timeout=timeout) as resp:
+                raw = resp.read()
+                # Handle gzip transparently
+                try:
+                    import gzip as _gz
+                    if resp.headers.get("Content-Encoding") == "gzip":
+                        raw = _gz.decompress(raw)
+                except Exception:
+                    pass
+                return raw.decode("utf-8", errors="ignore")
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 wait = rate_wait * (attempt + 1)
@@ -327,11 +372,106 @@ def http_get(url, headers=None, timeout=15, retries=3, rate_wait=3):
 
 # ── SCRAPERS ──────────────────────────────────────────────────────
 
+# ── Reddit OAuth API ──────────────────────────────────────────────
+# Reddit OAuth works from any cloud server — no proxy needed.
+# Set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET as env vars on Render.
+# Create a free app at: https://www.reddit.com/prefs/apps
+# (choose "script" type, any redirect URI e.g. http://localhost)
+REDDIT_CLIENT_ID     = os.environ.get("REDDIT_CLIENT_ID", "")
+REDDIT_CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET", "")
+REDDIT_UA            = "python:discord-hunter:v1.0 (by /u/discordlinkbot)"
+
+_reddit_token        = None
+_reddit_token_expiry = 0
+_reddit_token_lock   = threading.Lock()
+
+def _get_reddit_token():
+    """Fetch/cache a Reddit OAuth bearer token using client credentials."""
+    global _reddit_token, _reddit_token_expiry
+    with _reddit_token_lock:
+        if _reddit_token and time.time() < _reddit_token_expiry - 60:
+            return _reddit_token
+        if not REDDIT_CLIENT_ID or not REDDIT_CLIENT_SECRET:
+            return None
+        try:
+            import base64
+            creds    = base64.b64encode(f"{REDDIT_CLIENT_ID}:{REDDIT_CLIENT_SECRET}".encode()).decode()
+            payload  = urllib.parse.urlencode({"grant_type": "client_credentials"}).encode()
+            req      = urllib.request.Request(
+                "https://www.reddit.com/api/v1/access_token",
+                data=payload,
+                headers={
+                    "Authorization": f"Basic {creds}",
+                    "User-Agent":    REDDIT_UA,
+                    "Content-Type":  "application/x-www-form-urlencoded",
+                }
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+            _reddit_token        = data["access_token"]
+            _reddit_token_expiry = time.time() + data.get("expires_in", 3600)
+            logger.info("Reddit OAuth token obtained")
+            return _reddit_token
+        except Exception as e:
+            logger.warning(f"Reddit OAuth token failed: {e}")
+            return None
+
+def reddit_get(path, retries=4):
+    """
+    Fetch from Reddit OAuth API (oauth.reddit.com) if credentials are set,
+    otherwise fall back to public JSON API through proxy.
+    """
+    token = _get_reddit_token()
+    if token:
+        url     = f"https://oauth.reddit.com{path}" if path.startswith("/") else f"https://oauth.reddit.com/{path}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "User-Agent":    REDDIT_UA,
+            "Accept":        "application/json",
+        }
+    else:
+        # Fallback: public JSON API, route through proxy
+        base = path if path.startswith("http") else f"https://www.reddit.com{path}"
+        url  = base if ".json" in base else base + ".json"
+        headers = {
+            "User-Agent": REDDIT_UA,
+            "Accept":     "application/json",
+        }
+
+    proxy_handler = _get_proxy_handler()
+    opener = urllib.request.build_opener(proxy_handler) if proxy_handler else urllib.request.build_opener()
+
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with opener.open(req, timeout=20) as resp:
+                return resp.read().decode("utf-8", errors="ignore")
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and token:
+                # Token expired mid-scrape — clear and retry with fresh token
+                global _reddit_token
+                _reddit_token = None
+                token = _get_reddit_token()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+            elif e.code == 429:
+                wait = min(60, 5 * (2 ** attempt))
+                log(f"  Reddit rate limit — backing off {wait}s", "warning")
+                time.sleep(wait)
+            elif e.code in (403, 404):
+                return None
+            else:
+                time.sleep(5 * (attempt + 1))
+        except Exception as exc:
+            if attempt == retries - 1:
+                log(f"  Reddit request failed: {exc}", "warning")
+            time.sleep(5)
+    return None
+
 def scrape_reddit_subreddit(subreddit, limit=100):
     found = 0
     for sort in ["new", "hot"]:
-        html = http_get(f"https://www.reddit.com/r/{subreddit}/{sort}.json?limit={limit}",
-                        headers={"Accept": "application/json"}, rate_wait=2)
+        html = reddit_get(f"/r/{subreddit}/{sort}.json?limit={limit}")
         if not html: continue
         try: data = json.loads(html)
         except Exception: continue
@@ -345,8 +485,7 @@ def scrape_reddit_subreddit(subreddit, limit=100):
             pd        = post.get("data", {})
             permalink = pd.get("permalink", "")
             if not permalink: continue
-            chtml = http_get(f"https://www.reddit.com{permalink}.json?limit=50",
-                              headers={"Accept": "application/json"}, rate_wait=2)
+            chtml = reddit_get(f"{permalink}.json?limit=50")
             if not chtml: continue
             try:
                 for c in json.loads(chtml)[1]["data"]["children"]:
@@ -354,16 +493,15 @@ def scrape_reddit_subreddit(subreddit, limit=100):
                     for code in extract_codes(body):
                         if add_result(code, f"Reddit r/{subreddit} comment", body[:80]): found += 1
             except Exception: pass
-            time.sleep(0.6)
-        time.sleep(random.uniform(2, 3.5))
+            time.sleep(1.2)
+        time.sleep(random.uniform(4, 7))
     return found
 
 def scrape_reddit_search(keywords):
     found = 0
     for kw in keywords:
-        html = http_get(
-            f"https://www.reddit.com/search.json?q={urllib.parse.quote(kw)}&sort=new&limit=100&type=link,comment",
-            headers={"Accept": "application/json"}, rate_wait=2
+        html = reddit_get(
+            f"/search.json?q={urllib.parse.quote(kw)}&sort=new&limit=100&type=link,comment"
         )
         if not html: time.sleep(2); continue
         try: data = json.loads(html)
@@ -375,7 +513,7 @@ def scrape_reddit_search(keywords):
             text = pd.get("title","")+" "+pd.get("selftext","")+" "+pd.get("body","")+" "+pd.get("url","")
             for code in extract_codes(text):
                 if add_result(code, f"Reddit search: {kw}", pd.get("title", pd.get("body",""))[:80]): found += 1
-        time.sleep(random.uniform(2, 4))
+        time.sleep(random.uniform(4, 7))
     return found
 
 def scrape_disboard(pages=3):
@@ -749,9 +887,8 @@ def scrape_reddit_extra_keywords(keywords):
         "discord options alerts free", "copy trading discord",
     ]
     for term in extra_terms:
-        html = http_get(
-            f"https://www.reddit.com/search.json?q={urllib.parse.quote(term)}&sort=new&limit=100",
-            headers={"Accept": "application/json"}, rate_wait=2
+        html = reddit_get(
+            f"/search.json?q={urllib.parse.quote(term)}&sort=new&limit=100"
         )
         if not html: time.sleep(2); continue
         try: data = json.loads(html)
@@ -794,6 +931,303 @@ def scrape_google_custom(keywords):
         time.sleep(random.uniform(5, 10))  # Google is strict — longer delays
     return found
 
+def scrape_find_discord(pages=5):
+    """Find.discord.com — official Discord server discovery page."""
+    found  = 0
+    cats   = ["trading","crypto","finance","investing","stocks","forex"]
+    inv_re = re.compile(
+        r'href=["\']https?://discord(?:app)?\.com/invite/([A-Za-z0-9\-_]+)["\']'
+        r'|href=["\']https?://discord\.gg/([A-Za-z0-9\-_]+)["\']',
+        re.IGNORECASE
+    )
+    for cat in cats:
+        for page in range(1, pages + 1):
+            html = http_get(
+                f"https://discord.com/servers?query={urllib.parse.quote(cat)}&page={page}",
+                headers={"Referer": "https://discord.com/servers"}, rate_wait=3
+            )
+            if not html: continue
+            for m in inv_re.finditer(html):
+                code = m.group(1) or m.group(2)
+                if code and add_result(code, f"Find.Discord:{cat}", f"page {page}"): found += 1
+            for code in extract_codes(html):
+                if add_result(code, f"Find.Discord:{cat}", f"page {page}"): found += 1
+            time.sleep(random.uniform(2, 3.5))
+    return found
+
+def scrape_duckduckgo(keywords):
+    """
+    DuckDuckGo HTML search — much more scraper-friendly than Google.
+    Uses the lite endpoint which returns plain HTML with no JS.
+    """
+    found   = 0
+    headers = {
+        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer":         "https://duckduckgo.com/",
+    }
+    for kw in keywords:
+        query = urllib.parse.quote(f"{kw} discord.gg")
+        html  = http_get(
+            f"https://html.duckduckgo.com/html/?q={query}&kl=us-en",
+            headers=headers, rate_wait=4
+        )
+        if not html: time.sleep(3); continue
+        for code in extract_codes(html):
+            if add_result(code, f"DuckDuckGo:{kw}", kw): found += 1
+        time.sleep(random.uniform(3, 5))
+    return found
+
+def scrape_4chan_biz():
+    """
+    4chan /biz/ (business & finance board) — active trading community,
+    frequently shares Discord server links in threads.
+    """
+    found = 0
+    # Catalog JSON gives all active threads
+    html = http_get(
+        "https://a.4cdn.org/biz/catalog.json",
+        headers={"Accept": "application/json", "Referer": "https://boards.4channel.org/biz/"},
+        rate_wait=3
+    )
+    if not html:
+        return found
+    try:
+        pages_data = json.loads(html)
+    except Exception:
+        return found
+
+    thread_ids = []
+    for page in pages_data:
+        for thread in page.get("threads", []):
+            text = (thread.get("com","") + " " + thread.get("sub",""))
+            # Only fetch threads mentioning trading/discord keywords
+            if any(w in text.lower() for w in ["discord","forex","crypto","trading","signal","stock","btc","eth"]):
+                thread_ids.append(thread["no"])
+
+    log(f"  4chan /biz/: {len(thread_ids)} relevant threads found")
+    for tid in thread_ids[:40]:  # cap to avoid too many requests
+        thtml = http_get(
+            f"https://a.4cdn.org/biz/thread/{tid}.json",
+            headers={"Accept": "application/json", "Referer": "https://boards.4channel.org/biz/"},
+            rate_wait=2
+        )
+        if not thtml: continue
+        try:
+            tdata = json.loads(thtml)
+            for post in tdata.get("posts", []):
+                text = post.get("com","") + " " + post.get("filename","")
+                for code in extract_codes(text):
+                    if add_result(code, "4chan /biz/", post.get("com","")[:80]): found += 1
+        except Exception:
+            pass
+        time.sleep(random.uniform(0.8, 1.5))
+    return found
+
+def scrape_tradingview():
+    """
+    TradingView public chat and ideas — large trading community,
+    users frequently post Discord links in idea descriptions and comments.
+    """
+    found   = 0
+    headers = {
+        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept":          "application/json",
+        "Referer":         "https://www.tradingview.com/",
+        "Origin":          "https://www.tradingview.com",
+    }
+    # Public ideas API
+    terms = ["forex","crypto","btc","stocks","futures","options","signals"]
+    for term in terms:
+        html = http_get(
+            f"https://www.tradingview.com/ideas/{urllib.parse.quote(term)}/",
+            headers={"User-Agent": headers["User-Agent"], "Referer": "https://www.tradingview.com/"},
+            rate_wait=4
+        )
+        if not html: time.sleep(2); continue
+        for code in extract_codes(html):
+            if add_result(code, f"TradingView:{term}", "public idea"): found += 1
+        time.sleep(random.uniform(2, 4))
+
+    # Public screener/chat page
+    for sym in ["FOREXCOM:EURUSD","BINANCE:BTCUSDT","NASDAQ:QQQ"]:
+        html = http_get(
+            f"https://www.tradingview.com/symbols/{sym}/",
+            headers={"User-Agent": headers["User-Agent"]},
+            rate_wait=4
+        )
+        if not html: continue
+        for code in extract_codes(html):
+            if add_result(code, f"TradingView:{sym}", "symbol page"): found += 1
+        time.sleep(random.uniform(2, 3))
+    return found
+
+def scrape_hive():
+    """
+    Hive.blog — decentralised blogging platform popular with crypto/trading
+    community. Many posts contain Discord invite links.
+    """
+    found   = 0
+    tags    = ["forex","crypto","trading","stocks","investing","defi","bitcoin","signals"]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer":    "https://hive.blog/",
+    }
+    for tag in tags:
+        html = http_get(f"https://hive.blog/trending/{tag}", headers=headers, rate_wait=3)
+        if not html: continue
+        for code in extract_codes(html):
+            if add_result(code, f"Hive.blog:{tag}", "trending post"): found += 1
+
+        # Also hit the API for raw post content
+        api_html = http_get(
+            f"https://api.hive.blog",
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent":   headers["User-Agent"],
+            },
+            rate_wait=3
+        )
+        # Use the condenser API via POST — build request manually
+        import urllib.request as _ur
+        try:
+            payload = json.dumps({
+                "jsonrpc": "2.0", "method": "condenser_api.get_discussions_by_trending",
+                "params": [{"tag": tag, "limit": 20}], "id": 1
+            }).encode()
+            req = _ur.Request(
+                "https://api.hive.blog",
+                data=payload,
+                headers={"Content-Type": "application/json",
+                         "User-Agent": "Mozilla/5.0"}
+            )
+            with _ur.urlopen(req, timeout=12) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            for post in data.get("result", []):
+                body = post.get("body","") + " " + post.get("json_metadata","")
+                for code in extract_codes(body):
+                    if add_result(code, f"Hive.blog:{tag}", post.get("title","")[:80]): found += 1
+        except Exception:
+            pass
+        time.sleep(random.uniform(2, 3.5))
+    return found
+
+def scrape_medium(keywords):
+    """
+    Medium.com — many trading writers post Discord links in articles.
+    Scrapes tag pages and search results.
+    """
+    found   = 0
+    tags    = ["forex","cryptocurrency","stock-market","trading","day-trading",
+               "crypto-trading","investing","options-trading","algorithmic-trading"]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer":    "https://medium.com/",
+    }
+    for tag in tags:
+        html = http_get(f"https://medium.com/tag/{tag}/", headers=headers, rate_wait=4)
+        if not html: continue
+        for code in extract_codes(html):
+            if add_result(code, f"Medium:{tag}", "tag page"): found += 1
+        time.sleep(random.uniform(2, 4))
+
+    # Medium search
+    for kw in keywords[:8]:
+        encoded = urllib.parse.quote(kw)
+        html = http_get(
+            f"https://medium.com/search?q={encoded}+discord",
+            headers=headers, rate_wait=4
+        )
+        if not html: continue
+        for code in extract_codes(html):
+            if add_result(code, f"Medium search:{kw}", kw): found += 1
+        time.sleep(random.uniform(2, 4))
+    return found
+
+def scrape_github(keywords):
+    """
+    GitHub — READMEs, issues, and wikis for trading bots and signal tools
+    frequently contain Discord server invite links.
+    Uses GitHub's public search without auth.
+    """
+    found   = 0
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept":     "text/html",
+        "Referer":    "https://github.com/",
+    }
+    search_terms = [
+        "trading discord.gg", "forex signals discord.gg",
+        "crypto trading bot discord", "stock signals discord invite",
+        "algo trading discord", "options flow discord.gg",
+        "funded trader discord", "prop firm discord",
+    ]
+    for term in search_terms:
+        encoded = urllib.parse.quote(term)
+        # Search code
+        html = http_get(
+            f"https://github.com/search?q={encoded}&type=code",
+            headers=headers, rate_wait=5
+        )
+        if not html: time.sleep(3); continue
+        for code in extract_codes(html):
+            if add_result(code, f"GitHub:{term}", "code search"): found += 1
+
+        # Search repos
+        html2 = http_get(
+            f"https://github.com/search?q={encoded}&type=repositories",
+            headers=headers, rate_wait=5
+        )
+        if html2:
+            for code in extract_codes(html2):
+                if add_result(code, f"GitHub:{term}", "repo search"): found += 1
+        time.sleep(random.uniform(4, 7))
+    return found
+
+def scrape_pastebin(keywords):
+    """
+    Pastebin public pastes — traders frequently paste Discord invite lists,
+    signal group compilations, and server directories on Pastebin.
+    Searches via Google dork targeting pastebin.com.
+    """
+    found   = 0
+    headers = {
+        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer":         "https://www.bing.com/",
+    }
+    search_terms = [
+        "trading discord servers list",
+        "forex discord invites",
+        "crypto discord links",
+        "free trading signals discord",
+        "stock trading discord servers",
+    ]
+    # Use Bing to find relevant Pastebin pastes (more reliable than scraping Pastebin directly)
+    for term in search_terms:
+        query = urllib.parse.quote(f"site:pastebin.com {term} discord.gg")
+        html  = http_get(
+            f"https://www.bing.com/search?q={query}&count=20",
+            headers=headers, rate_wait=6
+        )
+        if not html: time.sleep(4); continue
+        # Extract pastebin URLs from search results
+        paste_re = re.compile(r'pastebin\.com/([A-Za-z0-9]{6,12})', re.IGNORECASE)
+        paste_ids = list(dict.fromkeys(paste_re.findall(html)))[:10]
+        for pid in paste_ids:
+            # Use raw paste endpoint
+            phtml = http_get(
+                f"https://pastebin.com/raw/{pid}",
+                headers={"User-Agent": headers["User-Agent"]},
+                rate_wait=3
+            )
+            if not phtml: continue
+            for code in extract_codes(phtml):
+                if add_result(code, f"Pastebin:{term}", f"paste {pid}"): found += 1
+            time.sleep(random.uniform(1.5, 3))
+        time.sleep(random.uniform(4, 7))
+    return found
+
 # ── Orchestrator ──────────────────────────────────────────────────
 def run_scrape(config, username):
     scrape_status.update({"running": True, "results": [], "skipped": 0,
@@ -830,20 +1264,28 @@ def run_scrape(config, username):
         if "disforge"     in sources: log("🔍 Scraping Disforge.com…");          n = scrape_disforge(pages=pages);                                               log(f"  → {n} new")
         if "discordscom"  in sources: log("🔍 Scraping Discords.com…");          n = scrape_discords_com(pages=pages);                                           log(f"  → {n} new")
         if "discordboats" in sources: log("🔍 Scraping Discord.boats…");         n = scrape_discord_boats(pages=pages);                                          log(f"  → {n} new")
-        if "discordhome"  in sources: log("🔍 Scraping DiscordHome.com…");       n = scrape_discordhome(pages=pages);                                            log(f"  → {n} new")
-        if "discordst"    in sources: log("🔍 Scraping Discord.st…");            n = scrape_discord_st(pages=pages);                                             log(f"  → {n} new")
-        if "discordservers" in sources: log("🔍 Scraping DiscordServers.com…");  n = scrape_discordservers_com(pages=pages);                                     log(f"  → {n} new")
-        if "twitter"      in sources: log("🔍 Scraping Twitter/X via Nitter…");  n = scrape_twitter_nitter(keywords[:3] if depth=="quick" else keywords[:10]);   log(f"  → {n} new")
-        if "bing"         in sources: log("🔍 Scraping Bing search…");            n = scrape_bing(keywords[:5] if depth=="quick" else keywords[:12]);             log(f"  → {n} new")
-        if "google"       in sources: log("🔍 Scraping Google search…");          n = scrape_google_custom(keywords[:3] if depth=="quick" else keywords[:10]);   log(f"  → {n} new")
-        if "youtube"      in sources: log("🔍 Scraping YouTube…");                n = scrape_youtube_search(keywords[:4] if depth=="quick" else keywords[:8]);   log(f"  → {n} new")
-        if "telegram"     in sources: log("🔍 Scraping Telegram public…");        n = scrape_telegram_public(keywords);                                           log(f"  → {n} new")
-        if "reddit_extra" in sources: log("🔍 Scraping Reddit (extra terms)…");   n = scrape_reddit_extra_keywords(keywords);                                     log(f"  → {n} new")
-        if "whop"         in sources: log("🔍 Scraping Whop.com…");               n = scrape_whop(pages=pages);                                                   log(f"  → {n} new")
-        if "patreon"      in sources: log("🔍 Scraping Patreon…");                n = scrape_patreon(keywords);                                                   log(f"  → {n} new")
-        if "gumroad"      in sources: log("🔍 Scraping Gumroad…");                n = scrape_gumroad();                                                           log(f"  → {n} new")
-        if "skool"        in sources: log("🔍 Scraping Skool.com…");              n = scrape_skool();                                                             log(f"  → {n} new")
-        if "stocktwits"   in sources: log("🔍 Scraping StockTwits…");             n = scrape_stocktwits();                                                        log(f"  → {n} new")
+        if "discordhome"   in sources: log("🔍 Scraping DiscordHome.com…");       n = scrape_discordhome(pages=pages);                                            log(f"  → {n} new")
+        if "discordst"     in sources: log("🔍 Scraping Discord.st…");            n = scrape_discord_st(pages=pages);                                             log(f"  → {n} new")
+        if "discordservers" in sources: log("🔍 Scraping DiscordServers.com…");   n = scrape_discordservers_com(pages=pages);                                     log(f"  → {n} new")
+        if "find_discord"  in sources: log("🔍 Scraping Discord server discovery…"); n = scrape_find_discord(pages=pages);                                        log(f"  → {n} new")
+        if "twitter"       in sources: log("🔍 Scraping Twitter/X via Nitter…");  n = scrape_twitter_nitter(keywords[:3] if depth=="quick" else keywords[:10]);   log(f"  → {n} new")
+        if "duckduckgo"    in sources: log("🔍 Scraping DuckDuckGo…");             n = scrape_duckduckgo(keywords[:5] if depth=="quick" else keywords[:15]);      log(f"  → {n} new")
+        if "bing"          in sources: log("🔍 Scraping Bing search…");            n = scrape_bing(keywords[:5] if depth=="quick" else keywords[:12]);             log(f"  → {n} new")
+        if "google"        in sources: log("🔍 Scraping Google search…");          n = scrape_google_custom(keywords[:3] if depth=="quick" else keywords[:10]);   log(f"  → {n} new")
+        if "youtube"       in sources: log("🔍 Scraping YouTube…");                n = scrape_youtube_search(keywords[:4] if depth=="quick" else keywords[:8]);   log(f"  → {n} new")
+        if "telegram"      in sources: log("🔍 Scraping Telegram public…");        n = scrape_telegram_public(keywords);                                           log(f"  → {n} new")
+        if "fourchan"      in sources: log("🔍 Scraping 4chan /biz/…");            n = scrape_4chan_biz();                                                         log(f"  → {n} new")
+        if "tradingview"   in sources: log("🔍 Scraping TradingView…");            n = scrape_tradingview();                                                       log(f"  → {n} new")
+        if "hive"          in sources: log("🔍 Scraping Hive.blog…");              n = scrape_hive();                                                              log(f"  → {n} new")
+        if "medium"        in sources: log("🔍 Scraping Medium…");                 n = scrape_medium(keywords);                                                    log(f"  → {n} new")
+        if "github"        in sources: log("🔍 Scraping GitHub…");                 n = scrape_github(keywords);                                                    log(f"  → {n} new")
+        if "pastebin"      in sources: log("🔍 Scraping Pastebin…");               n = scrape_pastebin(keywords);                                                  log(f"  → {n} new")
+        if "reddit_extra"  in sources: log("🔍 Scraping Reddit (extra terms)…");   n = scrape_reddit_extra_keywords(keywords);                                     log(f"  → {n} new")
+        if "whop"          in sources: log("🔍 Scraping Whop.com…");               n = scrape_whop(pages=pages);                                                   log(f"  → {n} new")
+        if "patreon"       in sources: log("🔍 Scraping Patreon…");                n = scrape_patreon(keywords);                                                   log(f"  → {n} new")
+        if "gumroad"       in sources: log("🔍 Scraping Gumroad…");                n = scrape_gumroad();                                                           log(f"  → {n} new")
+        if "skool"         in sources: log("🔍 Scraping Skool.com…");              n = scrape_skool();                                                             log(f"  → {n} new")
+        if "stocktwits"    in sources: log("🔍 Scraping StockTwits…");             n = scrape_stocktwits();                                                        log(f"  → {n} new")
 
         total = len(scrape_status["results"])
         log(f"✅ Done! {total} new servers found, {scrape_status['skipped']} already-seen skipped.", "info")

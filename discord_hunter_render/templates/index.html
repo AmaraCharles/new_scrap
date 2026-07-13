@@ -173,6 +173,7 @@ td{padding:9px 14px;vertical-align:middle}
           <label class="check-item"><input type="checkbox" id="src-topgg" checked><div><div class="ci-label">Top.gg</div><div class="ci-sub">Most popular listing site</div></div></label>
           <label class="check-item"><input type="checkbox" id="src-discordme" checked><div><div class="ci-label">Discord.me</div><div class="ci-sub">Public server listing</div></div></label>
           <label class="check-item"><input type="checkbox" id="src-disforge" checked><div><div class="ci-label">Disforge.com</div><div class="ci-sub">Server directory</div></div></label>
+          <label class="check-item"><input type="checkbox" id="src-find_discord" checked><div><div class="ci-label">Discord Discovery</div><div class="ci-sub">Official discord.com/servers</div></div></label>
           <label class="check-item"><input type="checkbox" id="src-discordscom"><div><div class="ci-label">Discords.com</div><div class="ci-sub">Server directory</div></div></label>
           <label class="check-item"><input type="checkbox" id="src-discordboats"><div><div class="ci-label">Discord.boats</div><div class="ci-sub">Server listing</div></div></label>
           <label class="check-item"><input type="checkbox" id="src-discordhome"><div><div class="ci-label">DiscordHome.com</div><div class="ci-sub">Server listing</div></div></label>
@@ -181,15 +182,22 @@ td{padding:9px 14px;vertical-align:middle}
         </div>
         <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtle);margin-bottom:6px">Search engines</div>
         <div class="check-group" style="margin-bottom:10px">
-          <label class="check-item"><input type="checkbox" id="src-bing" checked><div><div class="ci-label">Bing</div><div class="ci-sub">Scraper-friendly search</div></div></label>
+          <label class="check-item"><input type="checkbox" id="src-duckduckgo" checked><div><div class="ci-label">DuckDuckGo</div><div class="ci-sub">Scraper-friendly, no blocks</div></div></label>
+          <label class="check-item"><input type="checkbox" id="src-bing" checked><div><div class="ci-label">Bing</div><div class="ci-sub">High volume results</div></div></label>
           <label class="check-item"><input type="checkbox" id="src-google"><div><div class="ci-label">Google</div><div class="ci-sub">Strict — use sparingly</div></div></label>
+          <label class="check-item"><input type="checkbox" id="src-pastebin"><div><div class="ci-label">Pastebin</div><div class="ci-sub">Discord link dumps</div></div></label>
         </div>
-        <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtle);margin-bottom:6px">Social platforms</div>
+        <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtle);margin-bottom:6px">Social &amp; community</div>
         <div class="check-group" style="margin-bottom:10px">
           <label class="check-item"><input type="checkbox" id="src-twitter" checked><div><div class="ci-label">Twitter/X</div><div class="ci-sub">Via Nitter mirrors</div></div></label>
           <label class="check-item"><input type="checkbox" id="src-stocktwits" checked><div><div class="ci-label">StockTwits</div><div class="ci-sub">Trading social feed</div></div></label>
-          <label class="check-item"><input type="checkbox" id="src-youtube"><div><div class="ci-label">YouTube</div><div class="ci-sub">Channel about pages</div></div></label>
+          <label class="check-item"><input type="checkbox" id="src-tradingview" checked><div><div class="ci-label">TradingView</div><div class="ci-sub">Ideas &amp; symbol pages</div></div></label>
+          <label class="check-item"><input type="checkbox" id="src-fourchan"><div><div class="ci-label">4chan /biz/</div><div class="ci-sub">Business &amp; finance board</div></div></label>
           <label class="check-item"><input type="checkbox" id="src-telegram"><div><div class="ci-label">Telegram</div><div class="ci-sub">Public trading channels</div></div></label>
+          <label class="check-item"><input type="checkbox" id="src-youtube"><div><div class="ci-label">YouTube</div><div class="ci-sub">Channel about pages</div></div></label>
+          <label class="check-item"><input type="checkbox" id="src-hive"><div><div class="ci-label">Hive.blog</div><div class="ci-sub">Crypto blogging platform</div></div></label>
+          <label class="check-item"><input type="checkbox" id="src-medium"><div><div class="ci-label">Medium</div><div class="ci-sub">Trading articles</div></div></label>
+          <label class="check-item"><input type="checkbox" id="src-github"><div><div class="ci-label">GitHub</div><div class="ci-sub">Trading bot READMEs</div></div></label>
         </div>
         <div style="font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--subtle);margin-bottom:6px">Marketplaces</div>
         <div class="check-group">
@@ -370,17 +378,25 @@ function startScrape() {
   if (document.getElementById('src-topgg').checked)          sources.push('topgg');
   if (document.getElementById('src-discordme').checked)      sources.push('discordme');
   if (document.getElementById('src-disforge').checked)       sources.push('disforge');
+  if (document.getElementById('src-find_discord').checked)   sources.push('find_discord');
   if (document.getElementById('src-discordscom').checked)    sources.push('discordscom');
   if (document.getElementById('src-discordboats').checked)   sources.push('discordboats');
   if (document.getElementById('src-discordhome').checked)    sources.push('discordhome');
   if (document.getElementById('src-discordst').checked)      sources.push('discordst');
   if (document.getElementById('src-discordservers').checked) sources.push('discordservers');
+  if (document.getElementById('src-duckduckgo').checked)     sources.push('duckduckgo');
   if (document.getElementById('src-bing').checked)           sources.push('bing');
   if (document.getElementById('src-google').checked)         sources.push('google');
+  if (document.getElementById('src-pastebin').checked)       sources.push('pastebin');
   if (document.getElementById('src-twitter').checked)        sources.push('twitter');
   if (document.getElementById('src-stocktwits').checked)     sources.push('stocktwits');
-  if (document.getElementById('src-youtube').checked)        sources.push('youtube');
+  if (document.getElementById('src-tradingview').checked)    sources.push('tradingview');
+  if (document.getElementById('src-fourchan').checked)       sources.push('fourchan');
   if (document.getElementById('src-telegram').checked)       sources.push('telegram');
+  if (document.getElementById('src-youtube').checked)        sources.push('youtube');
+  if (document.getElementById('src-hive').checked)           sources.push('hive');
+  if (document.getElementById('src-medium').checked)         sources.push('medium');
+  if (document.getElementById('src-github').checked)         sources.push('github');
   if (document.getElementById('src-whop').checked)           sources.push('whop');
   if (document.getElementById('src-patreon').checked)        sources.push('patreon');
   if (document.getElementById('src-gumroad').checked)        sources.push('gumroad');
