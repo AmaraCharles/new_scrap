@@ -5,7 +5,7 @@ import time
 import random
 import hashlib
 import secrets
-import sqlite3
+import libsql_experimental as libsql
 import logging
 import datetime
 import threading
@@ -21,20 +21,17 @@ app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DATA_DIR = os.environ.get("DATA_DIR", "./data")
-DB_PATH  = os.path.join(DATA_DIR, "app.db")
+# ── Turso database config ─────────────────────────────────────────
+# Set these as env vars on Render:
+#   TURSO_URL   = libsql://your-db-name.turso.io
+#   TURSO_TOKEN = your-auth-token
+# Get both from: turso.tech (free tier: 500MB, no card needed)
+TURSO_URL   = os.environ.get("TURSO_URL", "")
+TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "")
 
-# /data already exists on Render (mounted by the disk) — only create if missing
-try:
-    os.makedirs(DATA_DIR, exist_ok=True)
-except PermissionError:
-    pass  # directory exists and is already mounted — that's fine
-
-# Log DB path immediately so it's visible in Render logs
 logging.basicConfig(level=logging.INFO)
 _startup_logger = logging.getLogger(__name__)
-_startup_logger.info(f"=== DB PATH: {DB_PATH} ===")
-_startup_logger.info(f"=== DATA_DIR env: {os.environ.get('DATA_DIR', 'NOT SET — using ./data')} ===")
+_startup_logger.info(f"=== Turso URL: {TURSO_URL or 'NOT SET'} ===")
 
 SESSION_TIMEOUT    = 60 * 60 * 8
 SERVER_EXPIRY_DAYS = 30
@@ -63,54 +60,104 @@ TRADING_KEYWORDS = [
 ]
 
 # ── Database ──────────────────────────────────────────────────────
+class TursoConn:
+    """
+    Thin wrapper around libsql connection that mimics the sqlite3
+    context manager and Row interface so all existing DB code works unchanged.
+    """
+    def __init__(self):
+        if TURSO_URL and TURSO_TOKEN:
+            self._conn = libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
+        else:
+            # Local fallback for development
+            os.makedirs("./data", exist_ok=True)
+            self._conn = libsql.connect("./data/app.db")
+        self._conn.row_factory = self._row_factory
+
+    @staticmethod
+    def _row_factory(cursor, row):
+        """Make rows behave like sqlite3.Row (dict-like access by column name)."""
+        cols = [d[0] for d in cursor.description]
+        return dict(zip(cols, row))
+
+    def execute(self, sql, params=()):
+        return self._conn.execute(sql, params)
+
+    def executemany(self, sql, params_list):
+        return self._conn.executemany(sql, params_list)
+
+    def executescript(self, sql):
+        # libsql doesn't have executescript — split and run individually
+        for stmt in sql.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                try:
+                    self._conn.execute(stmt)
+                except Exception:
+                    pass
+        self._conn.commit()
+
+    def commit(self):
+        self._conn.commit()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            try:
+                self._conn.commit()
+            except Exception:
+                pass
+        return False
+
 def get_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return TursoConn()
 
 def init_db():
+    """Create tables. Each statement run separately — Turso doesn't support executescript."""
+    stmts = [
+        """CREATE TABLE IF NOT EXISTS users (
+            username        TEXT PRIMARY KEY,
+            salt            TEXT NOT NULL,
+            hash            TEXT NOT NULL,
+            role            TEXT NOT NULL DEFAULT 'user',
+            scrape_credits  INTEGER NOT NULL DEFAULT 0,
+            daily_credits   INTEGER NOT NULL DEFAULT 0,
+            last_reset      TEXT NOT NULL DEFAULT '',
+            created         TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS server_history (
+            username    TEXT NOT NULL,
+            code        TEXT NOT NULL,
+            first_seen  TEXT NOT NULL,
+            PRIMARY KEY (username, code)
+        )""",
+        """CREATE TABLE IF NOT EXISTS scrape_results (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            username    TEXT NOT NULL,
+            code        TEXT NOT NULL,
+            url         TEXT NOT NULL,
+            source      TEXT NOT NULL,
+            context     TEXT NOT NULL DEFAULT '',
+            found_at    TEXT NOT NULL,
+            session_ts  TEXT NOT NULL
+        )""",
+        # Add columns if they don't exist yet (safe to run on existing DBs)
+        "ALTER TABLE users ADD COLUMN daily_credits INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN last_reset TEXT NOT NULL DEFAULT ''",
+    ]
     with get_db() as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS users (
-                username        TEXT PRIMARY KEY,
-                salt            TEXT NOT NULL,
-                hash            TEXT NOT NULL,
-                role            TEXT NOT NULL DEFAULT 'user',
-                scrape_credits  INTEGER NOT NULL DEFAULT 0,
-                daily_credits   INTEGER NOT NULL DEFAULT 0,
-                last_reset      TEXT NOT NULL DEFAULT '',
-                created         TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS server_history (
-                username    TEXT NOT NULL,
-                code        TEXT NOT NULL,
-                first_seen  TEXT NOT NULL,
-                PRIMARY KEY (username, code),
-                FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
-            );
-            CREATE TABLE IF NOT EXISTS scrape_results (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                username    TEXT NOT NULL,
-                code        TEXT NOT NULL,
-                url         TEXT NOT NULL,
-                source      TEXT NOT NULL,
-                context     TEXT NOT NULL DEFAULT '',
-                found_at    TEXT NOT NULL,
-                session_ts  TEXT NOT NULL,
-                FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
-            );
-        """)
-        # Migrate existing DBs that don't have new columns yet
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
-        if "daily_credits" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN daily_credits INTEGER NOT NULL DEFAULT 0")
-        if "last_reset" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN last_reset TEXT NOT NULL DEFAULT ''")
-    logger.info(f"Database ready at {DB_PATH}")
+        for stmt in stmts:
+            try:
+                conn.execute(stmt)
+            except Exception:
+                pass  # Column/table already exists
+    logger.info(f"Database ready (Turso: {bool(TURSO_URL and TURSO_TOKEN)})")
 
 def bootstrap_admin():
     with get_db() as conn:
-        if conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+        if conn.execute("SELECT 1 as x FROM users LIMIT 1").fetchone():
             return
         salt, hashed = hash_password("admin123")
         conn.execute(
@@ -256,21 +303,25 @@ def is_fresh_for_user(code, username):
             "SELECT first_seen FROM server_history WHERE username=? AND code=?",
             (username, code)
         ).fetchone()
-    if not row: return True
+    if not row:
+        return True
     try:
-        age = (datetime.datetime.now() - datetime.datetime.fromisoformat(row["first_seen"])).days
+        fs  = row["first_seen"] if isinstance(row, dict) else row[0]
+        age = (datetime.datetime.now() - datetime.datetime.fromisoformat(fs)).days
         return age > SERVER_EXPIRY_DAYS
     except Exception:
         return True
 
 def get_user_history_stats(username):
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=SERVER_EXPIRY_DAYS)).isoformat()
     with get_db() as conn:
-        total  = conn.execute("SELECT COUNT(*) FROM server_history WHERE username=?", (username,)).fetchone()[0]
-        cutoff = (datetime.datetime.now() - datetime.timedelta(days=SERVER_EXPIRY_DAYS)).isoformat()
-        active = conn.execute(
-            "SELECT COUNT(*) FROM server_history WHERE username=? AND first_seen > ?",
+        r_total  = conn.execute("SELECT COUNT(*) as c FROM server_history WHERE username=?", (username,)).fetchone()
+        r_active = conn.execute(
+            "SELECT COUNT(*) as c FROM server_history WHERE username=? AND first_seen > ?",
             (username, cutoff)
-        ).fetchone()[0]
+        ).fetchone()
+    total  = r_total["c"]  if r_total  else 0
+    active = r_active["c"] if r_active else 0
     return {"total_seen": total, "active": active, "eligible": total - active}
 
 # ── Persisted scrape results ─────────────────────────────────────
@@ -294,6 +345,9 @@ def load_results_from_db(username):
             "SELECT code, url, source, context, found_at FROM scrape_results "
             "WHERE username=? ORDER BY id ASC", (username,)
         ).fetchall()
+    if not rows:
+        return []
+    # rows are dicts (from row_factory)
     return [{"code": r["code"], "url": r["url"], "source": r["source"],
              "context": r["context"], "found_at": r["found_at"]} for r in rows]
 
@@ -1429,13 +1483,14 @@ def list_users():
         ).fetchall()
     result = {}
     for r in rows:
-        st = get_user_history_stats(r["username"])
-        result[r["username"]] = {
-            "role":           r["role"],
-            "scrape_credits": r["scrape_credits"],
-            "daily_credits":  r["daily_credits"],
-            "last_reset":     r["last_reset"],
-            "created":        r["created"],
+        u  = r["username"] if isinstance(r, dict) else r[0]
+        st = get_user_history_stats(u)
+        result[u] = {
+            "role":           r["role"]           if isinstance(r, dict) else r[1],
+            "scrape_credits": r["scrape_credits"] if isinstance(r, dict) else r[2],
+            "daily_credits":  r["daily_credits"]  if isinstance(r, dict) else r[3],
+            "last_reset":     r["last_reset"]     if isinstance(r, dict) else r[4],
+            "created":        r["created"]         if isinstance(r, dict) else r[5],
             "seen_total":     st["total_seen"],
             "seen_active":    st["active"],
         }
