@@ -5,7 +5,6 @@ import time
 import random
 import hashlib
 import secrets
-import libsql_experimental as libsql
 import logging
 import datetime
 import threading
@@ -22,12 +21,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ── Turso database config ─────────────────────────────────────────
+# Uses Turso's HTTP API — zero native dependencies, works on any host.
 # Set these as env vars on Render:
 #   TURSO_URL   = libsql://your-db-name.turso.io
 #   TURSO_TOKEN = your-auth-token
-# Get both from: turso.tech (free tier: 500MB, no card needed)
 TURSO_URL   = os.environ.get("TURSO_URL", "")
 TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "")
+
+# Convert libsql:// URL to HTTPS for the REST API
+def _turso_http_url():
+    if not TURSO_URL:
+        return ""
+    return TURSO_URL.replace("libsql://", "https://")
+
+TURSO_HTTP_URL = _turso_http_url()
 
 logging.basicConfig(level=logging.INFO)
 _startup_logger = logging.getLogger(__name__)
@@ -59,57 +66,147 @@ TRADING_KEYWORDS = [
     "discord.gg forex", "discord.gg crypto signals",
 ]
 
-# ── Database ──────────────────────────────────────────────────────
+# ── Database — Turso HTTP API (no native deps) ───────────────────
+import sqlite3 as _sqlite3
+
+class _FakeCursor:
+    """Mimics sqlite3 cursor so fetchone/fetchall work as expected."""
+    def __init__(self, rows, cols, lastrowid=None):
+        self._rows       = rows or []
+        self._cols       = cols or []
+        self.lastrowid   = lastrowid
+        self.description = [(c,) for c in self._cols]
+        self._idx        = 0
+
+    def fetchone(self):
+        if not self._rows:
+            return None
+        row = self._rows[0]
+        return dict(zip(self._cols, row)) if self._cols else None
+
+    def fetchall(self):
+        if not self._rows:
+            return []
+        return [dict(zip(self._cols, r)) for r in self._rows]
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+
 class TursoConn:
     """
-    Thin wrapper around libsql connection that mimics the sqlite3
-    context manager and Row interface so all existing DB code works unchanged.
+    Executes SQL against Turso's HTTP API.
+    Falls back to local SQLite when TURSO_URL/TOKEN are not set (dev mode).
+    Mimics sqlite3 connection interface so all existing code works unchanged.
     """
     def __init__(self):
-        if TURSO_URL and TURSO_TOKEN:
-            self._conn = libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
-        else:
-            # Local fallback for development
+        self._use_http  = bool(TURSO_HTTP_URL and TURSO_TOKEN)
+        self._local     = None
+        self._pending   = []   # batch statements for context manager
+        if not self._use_http:
             os.makedirs("./data", exist_ok=True)
-            self._conn = libsql.connect("./data/app.db")
-        self._conn.row_factory = self._row_factory
+            self._local = _sqlite3.connect("./data/app.db", check_same_thread=False)
+            self._local.row_factory = _sqlite3.Row
 
-    @staticmethod
-    def _row_factory(cursor, row):
-        """Make rows behave like sqlite3.Row (dict-like access by column name)."""
-        cols = [d[0] for d in cursor.description]
-        return dict(zip(cols, row))
+    # ── HTTP execution ────────────────────────────────────────────
+    def _http_exec(self, statements):
+        """
+        POST a batch of statements to Turso pipeline endpoint.
+        statements: list of {"type":"execute","stmt":{"sql":...,"args":[...]}}
+        Returns list of result dicts.
+        """
+        payload = json.dumps({"requests": statements}).encode()
+        req     = urllib.request.Request(
+            f"{TURSO_HTTP_URL}/v2/pipeline",
+            data    = payload,
+            headers = {
+                "Authorization": f"Bearer {TURSO_TOKEN}",
+                "Content-Type":  "application/json",
+            },
+            method  = "POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"Turso HTTP {e.code}: {body}") from e
 
+    def _make_stmt(self, sql, params=()):
+        args = []
+        for p in (params or []):
+            if p is None:
+                args.append({"type": "null"})
+            elif isinstance(p, int):
+                args.append({"type": "integer", "value": str(p)})
+            elif isinstance(p, float):
+                args.append({"type": "float", "value": str(p)})
+            else:
+                args.append({"type": "text", "value": str(p)})
+        return {"type": "execute", "stmt": {"sql": sql, "args": args}}
+
+    def _parse_result(self, result):
+        if result.get("type") == "error":
+            msg = result.get("error", {}).get("message", "Unknown error")
+            # Ignore "already exists" and "duplicate column" errors
+            if any(x in msg.lower() for x in
+                   ["already exists", "duplicate column", "table already"]):
+                return _FakeCursor([], [])
+            raise RuntimeError(f"Turso error: {msg}")
+        rows  = result.get("response", {}).get("result", {}).get("rows", [])
+        cols  = [c["name"] for c in
+                 result.get("response", {}).get("result", {}).get("cols", [])]
+        lrid  = result.get("response", {}).get("result", {}).get("last_insert_rowid")
+        # rows come as lists of {"type":..,"value":...} objects
+        parsed_rows = []
+        for row in rows:
+            parsed_rows.append([
+                (None if c.get("type") == "null"
+                 else int(c["value"]) if c.get("type") == "integer"
+                 else float(c["value"]) if c.get("type") == "float"
+                 else c.get("value"))
+                for c in row
+            ])
+        return _FakeCursor(parsed_rows, cols, lastrowid=lrid)
+
+    # ── Public interface ──────────────────────────────────────────
     def execute(self, sql, params=()):
-        return self._conn.execute(sql, params)
+        if not self._use_http:
+            cur = self._local.execute(sql, params or ())
+            # wrap in FakeCursor for uniform dict access
+            if cur.description:
+                cols = [d[0] for d in cur.description]
+                rows = [list(r) for r in cur.fetchall()]
+                return _FakeCursor(rows, cols, lastrowid=cur.lastrowid)
+            return _FakeCursor([], [], lastrowid=cur.lastrowid)
+        self._pending.append(self._make_stmt(sql, params))
+        # Execute immediately (not batched) so callers get results back
+        resp    = self._http_exec([self._make_stmt(sql, params)])
+        results = resp.get("results", [])
+        self._pending = []
+        return self._parse_result(results[0]) if results else _FakeCursor([], [])
 
     def executemany(self, sql, params_list):
-        return self._conn.executemany(sql, params_list)
-
-    def executescript(self, sql):
-        # libsql doesn't have executescript — split and run individually
-        for stmt in sql.split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                try:
-                    self._conn.execute(stmt)
-                except Exception:
-                    pass
-        self._conn.commit()
+        if not self._use_http:
+            self._local.executemany(sql, params_list)
+            return
+        stmts = [self._make_stmt(sql, p) for p in params_list]
+        if stmts:
+            self._http_exec(stmts)
 
     def commit(self):
-        self._conn.commit()
+        if not self._use_http and self._local:
+            self._local.commit()
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is None:
-            try:
-                self._conn.commit()
-            except Exception:
-                pass
+        if not self._use_http and self._local:
+            if exc_type is None:
+                self._local.commit()
         return False
+
 
 def get_db():
     return TursoConn()
