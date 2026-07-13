@@ -23,7 +23,12 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = os.environ.get("DATA_DIR", "./data")
 DB_PATH  = os.path.join(DATA_DIR, "app.db")
-os.makedirs(DATA_DIR, exist_ok=True)
+
+# /data already exists on Render (mounted by the disk) — only create if missing
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except PermissionError:
+    pass  # directory exists and is already mounted — that's fine
 
 # Log DB path immediately so it's visible in Render logs
 logging.basicConfig(level=logging.INFO)
