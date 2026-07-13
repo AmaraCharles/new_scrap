@@ -406,6 +406,7 @@ def _get_reddit_token():
                     "Content-Type":  "application/x-www-form-urlencoded",
                 }
             )
+            # Token endpoint works direct from Render — no proxy
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read())
             _reddit_token        = data["access_token"]
@@ -418,28 +419,31 @@ def _get_reddit_token():
 
 def reddit_get(path, retries=4):
     """
-    Fetch from Reddit OAuth API (oauth.reddit.com) if credentials are set,
-    otherwise fall back to public JSON API through proxy.
+    Reddit OAuth API calls go DIRECT (no proxy) — oauth.reddit.com
+    accepts Render's datacenter IPs fine when authenticated.
+    Falls back to proxy-routed public JSON API if no OAuth credentials.
     """
     token = _get_reddit_token()
+
     if token:
+        # OAuth path — always direct, no proxy
         url     = f"https://oauth.reddit.com{path}" if path.startswith("/") else f"https://oauth.reddit.com/{path}"
         headers = {
             "Authorization": f"Bearer {token}",
             "User-Agent":    REDDIT_UA,
             "Accept":        "application/json",
         }
+        opener = urllib.request.build_opener()  # direct, no proxy
     else:
-        # Fallback: public JSON API, route through proxy
+        # No OAuth — use public JSON API through proxy
         base = path if path.startswith("http") else f"https://www.reddit.com{path}"
         url  = base if ".json" in base else base + ".json"
         headers = {
             "User-Agent": REDDIT_UA,
             "Accept":     "application/json",
         }
-
-    proxy_handler = _get_proxy_handler()
-    opener = urllib.request.build_opener(proxy_handler) if proxy_handler else urllib.request.build_opener()
+        proxy_handler = _get_proxy_handler()
+        opener = urllib.request.build_opener(proxy_handler) if proxy_handler else urllib.request.build_opener()
 
     for attempt in range(retries):
         try:
@@ -448,7 +452,7 @@ def reddit_get(path, retries=4):
                 return resp.read().decode("utf-8", errors="ignore")
         except urllib.error.HTTPError as e:
             if e.code == 401 and token:
-                # Token expired mid-scrape — clear and retry with fresh token
+                # Token expired — refresh and retry
                 global _reddit_token
                 _reddit_token = None
                 token = _get_reddit_token()
