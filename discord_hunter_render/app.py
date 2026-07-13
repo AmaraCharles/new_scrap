@@ -17,20 +17,15 @@ from flask import (Flask, render_template, request, jsonify,
                    session, redirect, url_for, Response)
 
 app = Flask(__name__)
-# SECRET_KEY must be set as env var on Render — sessions survive restarts
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── Persistent disk path ──────────────────────────────────────────
-# On Render, mount a Persistent Disk at /data
-# Locally it falls back to ./data
 DATA_DIR = os.environ.get("DATA_DIR", "./data")
 DB_PATH  = os.path.join(DATA_DIR, "app.db")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# ── Constants ─────────────────────────────────────────────────────
-SESSION_TIMEOUT    = 60 * 60 * 8   # 8 hours
+SESSION_TIMEOUT    = 60 * 60 * 8
 SERVER_EXPIRY_DAYS = 30
 
 DISCORD_PATTERN = re.compile(
@@ -63,7 +58,6 @@ def get_db():
     return conn
 
 def init_db():
-    """Create tables if they don't exist. Safe to call on every startup."""
     with get_db() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
@@ -72,9 +66,10 @@ def init_db():
                 hash            TEXT NOT NULL,
                 role            TEXT NOT NULL DEFAULT 'user',
                 scrape_credits  INTEGER NOT NULL DEFAULT 0,
+                daily_credits   INTEGER NOT NULL DEFAULT 0,
+                last_reset      TEXT NOT NULL DEFAULT '',
                 created         TEXT NOT NULL
             );
-
             CREATE TABLE IF NOT EXISTS server_history (
                 username    TEXT NOT NULL,
                 code        TEXT NOT NULL,
@@ -83,23 +78,29 @@ def init_db():
                 FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
             );
         """)
+        # Migrate existing DBs that don't have new columns yet
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+        if "daily_credits" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN daily_credits INTEGER NOT NULL DEFAULT 0")
+        if "last_reset" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN last_reset TEXT NOT NULL DEFAULT ''")
     logger.info(f"Database ready at {DB_PATH}")
 
 def bootstrap_admin():
     with get_db() as conn:
-        row = conn.execute("SELECT 1 FROM users LIMIT 1").fetchone()
-        if row:
+        if conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             return
         salt, hashed = hash_password("admin123")
         conn.execute(
-            "INSERT INTO users (username, salt, hash, role, scrape_credits, created) VALUES (?,?,?,?,?,?)",
-            ("admin", salt, hashed, "admin", 999, datetime.datetime.now().isoformat())
+            "INSERT INTO users (username, salt, hash, role, scrape_credits, daily_credits, last_reset, created) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ("admin", salt, hashed, "admin", 999, 0, "", datetime.datetime.now().isoformat())
         )
     print("\n⚠️  No users found — default admin created:")
     print("    Username: admin  |  Password: admin123")
     print("    ⚠️  Change this immediately via /admin/users\n")
 
-# ── Auth helpers ──────────────────────────────────────────────────
+# ── Auth ──────────────────────────────────────────────────────────
 def hash_password(password, salt=None):
     if salt is None:
         salt = secrets.token_hex(16)
@@ -118,9 +119,8 @@ def get_user(username):
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        uid        = session.get("user")
-        login_time = session.get("login_time", 0)
-        if not uid or (time.time() - login_time) > SESSION_TIMEOUT:
+        uid = session.get("user")
+        if not uid or (time.time() - session.get("login_time", 0)) > SESSION_TIMEOUT:
             session.clear()
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Unauthorized"}), 401
@@ -139,54 +139,93 @@ def admin_required(f):
 # ── Credits ───────────────────────────────────────────────────────
 def get_user_credits(username):
     user = get_user(username)
-    if not user:
-        return 0
-    if user["role"] == "admin":
-        return 999
-    return user["scrape_credits"]
+    if not user: return 0
+    return 999 if user["role"] == "admin" else user["scrape_credits"]
 
 def deduct_credit(username):
+    """Atomically deduct 1 credit. Returns True if successful."""
     user = get_user(username)
-    if not user:
-        return False
-    if user["role"] == "admin":
-        return True
-    if user["scrape_credits"] <= 0:
-        return False
+    if not user: return False
+    if user["role"] == "admin": return True
     with get_db() as conn:
-        conn.execute(
-            "UPDATE users SET scrape_credits = scrape_credits - 1 WHERE username=? AND scrape_credits > 0",
+        cur = conn.execute(
+            "UPDATE users SET scrape_credits = scrape_credits - 1 "
+            "WHERE username=? AND scrape_credits > 0",
             (username,)
         )
-    return True
+        # rowcount=0 means the WHERE scrape_credits>0 guard blocked it — already 0
+        return cur.rowcount > 0
 
-def set_credits(username, amount):
+def set_credits(username, amount, also_set_daily=False):
+    """Set a user's current credits. Optionally also update their daily allowance."""
+    amount = max(0, int(amount))
     with get_db() as conn:
-        conn.execute("UPDATE users SET scrape_credits=? WHERE username=?", (max(0, amount), username))
-    return True
+        if also_set_daily:
+            conn.execute(
+                "UPDATE users SET scrape_credits=?, daily_credits=? WHERE username=?",
+                (amount, amount, username)
+            )
+        else:
+            conn.execute(
+                "UPDATE users SET scrape_credits=? WHERE username=?",
+                (amount, username)
+            )
+    return get_user(username)["scrape_credits"]
 
 def add_credits(username, amount):
+    """Add credits to a user's current balance."""
+    amount = max(0, int(amount))
     with get_db() as conn:
-        conn.execute("UPDATE users SET scrape_credits = scrape_credits + ? WHERE username=?",
-                     (max(0, amount), username))
-    return True
+        conn.execute(
+            "UPDATE users SET scrape_credits = scrape_credits + ? WHERE username=?",
+            (amount, username)
+        )
+    return get_user(username)["scrape_credits"]
 
-# ── Per-user server history ───────────────────────────────────────
-def get_user_history(username):
-    """Returns {code: iso_date} dict."""
+def set_daily_allowance(username, amount):
+    """Set the daily reset allowance WITHOUT touching current balance."""
+    amount = max(0, int(amount))
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT code, first_seen FROM server_history WHERE username=?", (username,)
-        ).fetchall()
-    return {r["code"]: r["first_seen"] for r in rows}
+        conn.execute(
+            "UPDATE users SET daily_credits=? WHERE username=?",
+            (amount, username)
+        )
 
-def add_to_user_history(username, codes_with_meta):
-    now = datetime.datetime.now().isoformat()
-    rows = [(username, item["code"], now) for item in codes_with_meta]
+# ── Midnight reset thread ─────────────────────────────────────────
+def _midnight_reset_loop():
+    """Background thread: at midnight, reset every non-admin user's
+    scrape_credits back to their daily_credits allowance."""
+    while True:
+        now    = datetime.datetime.now()
+        # Seconds until next midnight
+        midnight = (now + datetime.timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        sleep_secs = (midnight - now).total_seconds()
+        logger.info(f"[reset] Next credit reset in {int(sleep_secs//3600)}h "
+                    f"{int((sleep_secs%3600)//60)}m")
+        time.sleep(sleep_secs)
+        # Reset
+        today = datetime.date.today().isoformat()
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE users SET scrape_credits = daily_credits, last_reset = ? "
+                "WHERE role != 'admin' AND daily_credits > 0",
+                (today,)
+            )
+        logger.info(f"[reset] Daily credit reset complete for {today}")
+
+def start_reset_thread():
+    t = threading.Thread(target=_midnight_reset_loop, daemon=True)
+    t.start()
+
+# ── Server history ────────────────────────────────────────────────
+def add_to_user_history(username, results):
+    now  = datetime.datetime.now().isoformat()
+    rows = [(username, r["code"], now) for r in results]
     with get_db() as conn:
         conn.executemany(
-            "INSERT OR IGNORE INTO server_history (username, code, first_seen) VALUES (?,?,?)",
-            rows
+            "INSERT OR IGNORE INTO server_history (username, code, first_seen) VALUES (?,?,?)", rows
         )
 
 def is_fresh_for_user(code, username):
@@ -195,8 +234,7 @@ def is_fresh_for_user(code, username):
             "SELECT first_seen FROM server_history WHERE username=? AND code=?",
             (username, code)
         ).fetchone()
-    if not row:
-        return True
+    if not row: return True
     try:
         age = (datetime.datetime.now() - datetime.datetime.fromisoformat(row["first_seen"])).days
         return age > SERVER_EXPIRY_DAYS
@@ -205,9 +243,7 @@ def is_fresh_for_user(code, username):
 
 def get_user_history_stats(username):
     with get_db() as conn:
-        total = conn.execute(
-            "SELECT COUNT(*) FROM server_history WHERE username=?", (username,)
-        ).fetchone()[0]
+        total  = conn.execute("SELECT COUNT(*) FROM server_history WHERE username=?", (username,)).fetchone()[0]
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=SERVER_EXPIRY_DAYS)).isoformat()
         active = conn.execute(
             "SELECT COUNT(*) FROM server_history WHERE username=? AND first_seen > ?",
@@ -215,25 +251,19 @@ def get_user_history_stats(username):
         ).fetchone()[0]
     return {"total_seen": total, "active": active, "eligible": total - active}
 
-# ── Global scrape state ───────────────────────────────────────────
+# ── Scrape state ──────────────────────────────────────────────────
 scrape_status = {
-    "running":    False,
-    "progress":   [],
-    "results":    [],
-    "skipped":    0,
-    "seen_codes": set(),
-    "error":      None,
-    "username":   None,
+    "running": False, "progress": [], "results": [],
+    "skipped": 0, "seen_codes": set(), "error": None, "username": None,
 }
 
-# ── Core helpers ──────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────
 def extract_codes(text):
     codes = []
     for m in DISCORD_PATTERN.finditer(text or ""):
         code = m.group(1) or m.group(2)
         if code and 2 < len(code) < 50:
-            if code.lower() not in ("nitro","app","channels","login",
-                                    "register","developers","download"):
+            if code.lower() not in ("nitro","app","channels","login","register","developers","download"):
                 codes.append(code)
     return list(dict.fromkeys(codes))
 
@@ -244,7 +274,7 @@ def log(msg, level="info"):
     scrape_status["progress"].append({"msg": msg, "level": level, "ts": time.time()})
     getattr(logger, level)(msg)
 
-def add_result(code, source, context="", paid=False, price_hint=""):
+def add_result(code, source, context=""):
     username = scrape_status.get("username")
     if code in scrape_status["seen_codes"]:
         return False
@@ -253,21 +283,17 @@ def add_result(code, source, context="", paid=False, price_hint=""):
         return False
     scrape_status["seen_codes"].add(code)
     scrape_status["results"].append({
-        "code":       code,
-        "url":        build_invite_url(code),
-        "source":     source,
-        "context":    context[:140],
-        "found_at":   datetime.datetime.now().strftime("%H:%M:%S"),
-        "paid":       paid,
-        "price_hint": price_hint[:60] if price_hint else "",
+        "code":     code,
+        "url":      build_invite_url(code),
+        "source":   source,
+        "context":  context[:140],
+        "found_at": datetime.datetime.now().strftime("%H:%M:%S"),
     })
     return True
 
 def http_get(url, headers=None, timeout=15, retries=3):
     base_headers = {
-        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                           "AppleWebKit/537.36 (KHTML, like Gecko) "
-                           "Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept":          "text/html,application/xhtml+xml,application/json,*/*",
         "Accept-Language": "en-US,en;q=0.9",
     }
@@ -294,6 +320,7 @@ def http_get(url, headers=None, timeout=15, retries=3):
     return None
 
 # ── SCRAPERS ──────────────────────────────────────────────────────
+
 def scrape_reddit_subreddit(subreddit, limit=100):
     found = 0
     for sort in ["new", "hot"]:
@@ -307,8 +334,7 @@ def scrape_reddit_subreddit(subreddit, limit=100):
             pd   = post.get("data", {})
             text = pd.get("title","")+" "+pd.get("selftext","")+" "+pd.get("url","")
             for code in extract_codes(text):
-                if add_result(code, f"Reddit r/{subreddit}", pd.get("title","")[:80]):
-                    found += 1
+                if add_result(code, f"Reddit r/{subreddit}", pd.get("title","")[:80]): found += 1
         for post in posts[:15]:
             pd        = post.get("data", {})
             permalink = pd.get("permalink", "")
@@ -320,8 +346,7 @@ def scrape_reddit_subreddit(subreddit, limit=100):
                 for c in json.loads(chtml)[1]["data"]["children"]:
                     body = c.get("data", {}).get("body", "")
                     for code in extract_codes(body):
-                        if add_result(code, f"Reddit r/{subreddit} comment", body[:80]):
-                            found += 1
+                        if add_result(code, f"Reddit r/{subreddit} comment", body[:80]): found += 1
             except Exception: pass
             time.sleep(0.6)
         time.sleep(random.uniform(2, 3.5))
@@ -330,8 +355,10 @@ def scrape_reddit_subreddit(subreddit, limit=100):
 def scrape_reddit_search(keywords):
     found = 0
     for kw in keywords:
-        html = http_get(f"https://www.reddit.com/search.json?q={urllib.parse.quote(kw)}&sort=new&limit=100&type=link,comment",
-                        headers={"Accept": "application/json"})
+        html = http_get(
+            f"https://www.reddit.com/search.json?q={urllib.parse.quote(kw)}&sort=new&limit=100&type=link,comment",
+            headers={"Accept": "application/json"}
+        )
         if not html: time.sleep(2); continue
         try: data = json.loads(html)
         except Exception: continue
@@ -341,17 +368,19 @@ def scrape_reddit_search(keywords):
             pd   = post.get("data", {})
             text = pd.get("title","")+" "+pd.get("selftext","")+" "+pd.get("body","")+" "+pd.get("url","")
             for code in extract_codes(text):
-                if add_result(code, f"Reddit search: {kw}", pd.get("title", pd.get("body",""))[:80]):
-                    found += 1
+                if add_result(code, f"Reddit search: {kw}", pd.get("title", pd.get("body",""))[:80]): found += 1
         time.sleep(random.uniform(2, 4))
     return found
 
 def scrape_disboard(pages=3):
-    found    = 0
-    tags     = ["trading","forex","crypto-trading","stocks","investing",
-                "day-trading","options-trading","futures","signals","prop-firm"]
-    inv_re   = re.compile(r'href=["\']https?://discord(?:app)?\.com/invite/([A-Za-z0-9\-_]+)["\']'
-                          r'|href=["\']https?://discord\.gg/([A-Za-z0-9\-_]+)["\']', re.IGNORECASE)
+    found   = 0
+    tags    = ["trading","forex","crypto-trading","stocks","investing",
+               "day-trading","options-trading","futures","signals","prop-firm"]
+    inv_re  = re.compile(
+        r'href=["\']https?://discord(?:app)?\.com/invite/([A-Za-z0-9\-_]+)["\']'
+        r'|href=["\']https?://discord\.gg/([A-Za-z0-9\-_]+)["\']',
+        re.IGNORECASE
+    )
     for tag in tags:
         for page in range(1, pages + 1):
             html = http_get(f"https://disboard.org/servers/tag/{tag}?page={page}&fl=en&sort=-member_count",
@@ -394,97 +423,85 @@ def scrape_whop(pages=5):
     categories = ["trading","forex","crypto","stocks","investing","options","futures","signals","finance"]
     invite_re  = re.compile(r'discord\.gg/([A-Za-z0-9\-_]{2,50})', re.IGNORECASE)
     link_re    = re.compile(r'href=["\'][^"\']*discord(?:app)?\.com/invite/([A-Za-z0-9\-_]{2,50})["\']', re.IGNORECASE)
-    price_re   = re.compile(r'\$[\d,]+(?:\.\d{2})?(?:\s*/\s*(?:mo|month|week|wk|yr|year))?', re.IGNORECASE)
     for cat in categories:
         for page in range(1, pages + 1):
             html = http_get(f"https://whop.com/marketplace/?category={cat}&page={page}",
                             headers={"Referer": "https://whop.com/"})
             if not html: continue
-            prices     = price_re.findall(html)
-            price_hint = prices[0] if prices else ""
             codes = [m.group(1) for m in invite_re.finditer(html)] + [m.group(1) for m in link_re.finditer(html)]
             for code in list(dict.fromkeys(codes)):
-                if add_result(code, f"Whop.com:{cat}", f"paid — {price_hint}", paid=True, price_hint=price_hint): found += 1
-            prod_re = re.compile(r'href=[\"\']/([\w\-]+)[\"\'][^>]*>(?:[^<]*<[^>]*>)*[^<]*(?:trading|forex|crypto|signal|invest)', re.IGNORECASE)
+                if add_result(code, f"Whop.com:{cat}", f"category {cat} p{page}"): found += 1
+            prod_re = re.compile(r'href=[\"\']/([\w\-]+)[\"\']+[^>]*>(?:[^<]*<[^>]*>)*[^<]*(?:trading|forex|crypto|signal|invest)', re.IGNORECASE)
             for slug in [m.group(1) for m in prod_re.finditer(html)][:8]:
                 phtml = http_get(f"https://whop.com/{slug}/", headers={"Referer": "https://whop.com/marketplace/"})
                 if not phtml: continue
-                ph = (price_re.findall(phtml) or [""])[0]
                 for code in extract_codes(phtml):
-                    if add_result(code, f"Whop.com product:{slug}", f"paid — {ph}", paid=True, price_hint=ph): found += 1
+                    if add_result(code, f"Whop.com:{slug}", "product page"): found += 1
                 time.sleep(random.uniform(1, 2))
             time.sleep(random.uniform(2, 4))
         log(f"  Whop '{cat}': {found} total so far")
     return found
 
 def scrape_patreon(keywords):
-    found    = 0
-    price_re = re.compile(r'\$[\d]+(?:\.\d{2})?(?:/mo)?', re.IGNORECASE)
-    terms    = ["trading signals discord","forex discord","crypto signals discord",
-                "stock trading discord","options trading discord","day trading discord",
-                "funded trader discord","prop firm discord"]
+    found  = 0
+    terms  = ["trading signals discord","forex discord","crypto signals discord",
+               "stock trading discord","options trading discord","day trading discord",
+               "funded trader discord","prop firm discord"]
     for term in terms:
         html = http_get(f"https://www.patreon.com/search?q={urllib.parse.quote(term)}",
                         headers={"Referer": "https://www.patreon.com/"})
         if not html: time.sleep(2); continue
-        ph = (price_re.findall(html) or [""])[0]
         for code in extract_codes(html):
-            if add_result(code, f"Patreon:{term}", f"paid creator — {ph}", paid=True, price_hint=ph): found += 1
+            if add_result(code, f"Patreon:{term}", term): found += 1
         creator_re = re.compile(r'"url":"https://www\.patreon\.com/([a-zA-Z0-9_\-]+)"', re.IGNORECASE)
         for slug in list(dict.fromkeys(creator_re.findall(html)))[:10]:
             if slug in ("home","login","signup","explore","search","about"): continue
-            chtml = http_get(f"https://www.patreon.com/{slug}", headers={"Referer": "https://www.patreon.com/search"})
+            chtml = http_get(f"https://www.patreon.com/{slug}",
+                             headers={"Referer": "https://www.patreon.com/search"})
             if not chtml: continue
-            ch = (price_re.findall(chtml) or [""])[0]
             for code in extract_codes(chtml):
-                if add_result(code, f"Patreon creator:{slug}", f"paid — {ch}", paid=True, price_hint=ch): found += 1
+                if add_result(code, f"Patreon:{slug}", f"creator page"): found += 1
             time.sleep(random.uniform(1.5, 3))
         time.sleep(random.uniform(2, 4))
     return found
 
 def scrape_gumroad():
-    found    = 0
-    price_re = re.compile(r'\$[\d]+(?:\.\d{2})?', re.IGNORECASE)
-    terms    = ["trading signals","forex course discord","crypto signals",
-                "stock trading course","options trading","day trading signals"]
+    found = 0
+    terms = ["trading signals","forex course discord","crypto signals",
+             "stock trading course","options trading","day trading signals"]
     for term in terms:
         html = http_get(f"https://gumroad.com/discover?query={urllib.parse.quote(term)}&sort=featured",
                         headers={"Referer": "https://gumroad.com/"})
         if not html: time.sleep(2); continue
-        ph = (price_re.findall(html) or [""])[0]
         for code in extract_codes(html):
-            if add_result(code, f"Gumroad:{term}", f"paid — {ph}", paid=True, price_hint=ph): found += 1
+            if add_result(code, f"Gumroad:{term}", term): found += 1
         prod_re = re.compile(r'href=["\']https://[a-z0-9\-]+\.gumroad\.com/l/([a-zA-Z0-9_\-]+)["\']', re.IGNORECASE)
         for slug in list(dict.fromkeys(prod_re.findall(html)))[:6]:
-            phtml = http_get(f"https://gumroad.com/l/{slug}", headers={"Referer": "https://gumroad.com/discover"})
+            phtml = http_get(f"https://gumroad.com/l/{slug}",
+                             headers={"Referer": "https://gumroad.com/discover"})
             if not phtml: continue
-            ph2 = (price_re.findall(phtml) or [""])[0]
             for code in extract_codes(phtml):
-                if add_result(code, f"Gumroad product:{slug}", f"paid — {ph2}", paid=True, price_hint=ph2): found += 1
+                if add_result(code, f"Gumroad:{slug}", "product page"): found += 1
             time.sleep(random.uniform(1, 2))
         time.sleep(random.uniform(2, 3.5))
     return found
 
 def scrape_skool():
-    found    = 0
-    price_re = re.compile(r'\$[\d,]+(?:\.\d{2})?(?:/mo)?', re.IGNORECASE)
+    found = 0
     for term in ["trading","forex","crypto","stocks","options","signals"]:
         html = http_get(f"https://www.skool.com/discover?q={urllib.parse.quote(term)}",
                         headers={"Referer": "https://www.skool.com/"})
         if not html: time.sleep(2); continue
-        prices = price_re.findall(html)
-        ph     = prices[0] if prices else ""
         for code in extract_codes(html):
-            if add_result(code, f"Skool.com:{term}", f"community — {ph}", paid=bool(prices), price_hint=ph): found += 1
-        slug_re = re.compile(r'href=[\"\']\/([a-zA-Z0-9_\-]+)[\"\'][^>]*class=[\"|\'][^\"\']*community', re.IGNORECASE)
+            if add_result(code, f"Skool.com:{term}", term): found += 1
+        slug_re = re.compile(r'href=[\"\']/([a-zA-Z0-9_\-]+)[\"\']+[^>]*class=[\"|\'][^\"\']*community', re.IGNORECASE)
         for slug in list(dict.fromkeys(m.group(1) for m in slug_re.finditer(html)))[:8]:
             if slug in ("discover","login","signup","about","pricing"): continue
-            chtml = http_get(f"https://www.skool.com/{slug}", headers={"Referer": "https://www.skool.com/discover"})
+            chtml = http_get(f"https://www.skool.com/{slug}",
+                             headers={"Referer": "https://www.skool.com/discover"})
             if not chtml: continue
-            cp = price_re.findall(chtml)
-            ch = cp[0] if cp else ""
             for code in extract_codes(chtml):
-                if add_result(code, f"Skool.com group:{slug}", f"community — {ch}", paid=bool(cp), price_hint=ch): found += 1
+                if add_result(code, f"Skool.com:{slug}", "community page"): found += 1
             time.sleep(random.uniform(1, 2))
         time.sleep(random.uniform(2, 3.5))
     return found
@@ -495,7 +512,7 @@ def scrape_stocktwits():
         html = http_get(f"https://stocktwits.com/symbol/{sym}")
         if not html: continue
         for code in extract_codes(html):
-            if add_result(code, f"StockTwits:{sym}", f"symbol stream {sym}"): found += 1
+            if add_result(code, f"StockTwits:{sym}", f"symbol stream"): found += 1
         time.sleep(random.uniform(2, 3))
     return found
 
@@ -529,17 +546,17 @@ def run_scrape(config, username):
             n = scrape_reddit_search(keywords[:4] if depth == "quick" else keywords)
             log(f"  → {n} new from Reddit search")
 
-        if "disboard"   in sources: log("🔍 Scraping Disboard.org…");         n = scrape_disboard(pages=pages);    log(f"  → {n} new")
-        if "discordme"  in sources: log("🔍 Scraping Discord.me…");            n = scrape_discord_me(pages=pages);  log(f"  → {n} new")
-        if "twitter"    in sources: log("🔍 Scraping Twitter/X via Nitter…");  n = scrape_twitter_nitter(keywords[:3] if depth=="quick" else keywords[:10]); log(f"  → {n} new")
-        if "whop"       in sources: log("💰 Scraping Whop.com…");              n = scrape_whop(pages=pages);        log(f"  → {n} new")
-        if "patreon"    in sources: log("💰 Scraping Patreon…");               n = scrape_patreon(keywords);        log(f"  → {n} new")
-        if "gumroad"    in sources: log("💰 Scraping Gumroad…");               n = scrape_gumroad();                log(f"  → {n} new")
-        if "skool"      in sources: log("💰 Scraping Skool.com…");             n = scrape_skool();                  log(f"  → {n} new")
-        if "stocktwits" in sources: log("🔍 Scraping StockTwits…");            n = scrape_stocktwits();             log(f"  → {n} new")
+        if "disboard"   in sources: log("🔍 Scraping Disboard.org…");        n = scrape_disboard(pages=pages);   log(f"  → {n} new")
+        if "discordme"  in sources: log("🔍 Scraping Discord.me…");           n = scrape_discord_me(pages=pages); log(f"  → {n} new")
+        if "twitter"    in sources: log("🔍 Scraping Twitter/X via Nitter…"); n = scrape_twitter_nitter(keywords[:3] if depth=="quick" else keywords[:10]); log(f"  → {n} new")
+        if "whop"       in sources: log("🔍 Scraping Whop.com…");             n = scrape_whop(pages=pages);       log(f"  → {n} new")
+        if "patreon"    in sources: log("🔍 Scraping Patreon…");              n = scrape_patreon(keywords);       log(f"  → {n} new")
+        if "gumroad"    in sources: log("🔍 Scraping Gumroad…");              n = scrape_gumroad();               log(f"  → {n} new")
+        if "skool"      in sources: log("🔍 Scraping Skool.com…");            n = scrape_skool();                 log(f"  → {n} new")
+        if "stocktwits" in sources: log("🔍 Scraping StockTwits…");           n = scrape_stocktwits();            log(f"  → {n} new")
 
         total = len(scrape_status["results"])
-        log(f"✅ Done! {total} new servers, {scrape_status['skipped']} skipped.", "info")
+        log(f"✅ Done! {total} new servers found, {scrape_status['skipped']} already-seen skipped.", "info")
         if scrape_status["results"]:
             add_to_user_history(username, scrape_status["results"])
 
@@ -587,16 +604,20 @@ def admin_users_page():
 @admin_required
 def list_users():
     with get_db() as conn:
-        rows = conn.execute("SELECT username, role, scrape_credits, created FROM users").fetchall()
+        rows = conn.execute(
+            "SELECT username, role, scrape_credits, daily_credits, last_reset, created FROM users"
+        ).fetchall()
     result = {}
     for r in rows:
         st = get_user_history_stats(r["username"])
         result[r["username"]] = {
-            "role":          r["role"],
+            "role":           r["role"],
             "scrape_credits": r["scrape_credits"],
-            "created":       r["created"],
-            "seen_total":    st["total_seen"],
-            "seen_active":   st["active"],
+            "daily_credits":  r["daily_credits"],
+            "last_reset":     r["last_reset"],
+            "created":        r["created"],
+            "seen_total":     st["total_seen"],
+            "seen_active":    st["active"],
         }
     return jsonify(result)
 
@@ -618,10 +639,12 @@ def add_user():
     if get_user(username):
         return jsonify({"error": "Username already exists"}), 409
     salt, hashed = hash_password(password)
+    daily  = credits if role != "admin" else 0
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO users (username, salt, hash, role, scrape_credits, created) VALUES (?,?,?,?,?,?)",
-            (username, salt, hashed, role, credits, datetime.datetime.now().isoformat())
+            "INSERT INTO users (username, salt, hash, role, scrape_credits, daily_credits, last_reset, created) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (username, salt, hashed, role, credits, daily, "", datetime.datetime.now().isoformat())
         )
     return jsonify({"status": "created", "username": username})
 
@@ -666,8 +689,9 @@ def clear_user_history(username):
 @login_required
 @admin_required
 def manage_credits(username):
-    data   = request.get_json(silent=True) or {}
-    action = data.get("action", "add")
+    data         = request.get_json(silent=True) or {}
+    action       = data.get("action", "add")   # add | set | set_daily
+    set_daily_fl = data.get("set_daily", False) # True = also update daily allowance
     try:   amount = int(data.get("amount", 0))
     except (ValueError, TypeError):
         return jsonify({"error": "Amount must be an integer"}), 400
@@ -675,10 +699,20 @@ def manage_credits(username):
         return jsonify({"error": "Amount must be 0 or greater"}), 400
     if not get_user(username):
         return jsonify({"error": "User not found"}), 404
-    if action == "set": set_credits(username, amount)
-    else:               add_credits(username, amount)
-    new_total = get_user(username)["scrape_credits"]
-    return jsonify({"status": "updated", "username": username, "credits": new_total})
+    if action == "set":
+        new_val = set_credits(username, amount, also_set_daily=set_daily_fl)
+    elif action == "set_daily":
+        set_daily_allowance(username, amount)
+        new_val = get_user(username)["scrape_credits"]
+    else:  # add
+        new_val = add_credits(username, amount)
+    user = get_user(username)
+    return jsonify({
+        "status":        "updated",
+        "username":      username,
+        "credits":       user["scrape_credits"],
+        "daily_credits": user["daily_credits"],
+    })
 
 @app.route("/api/me/password", methods=["PUT"])
 @login_required
@@ -712,10 +746,9 @@ def index():
 @login_required
 def get_credits():
     username = session["user"]
-    user     = get_user(username)
     return jsonify({
         "credits":   get_user_credits(username),
-        "unlimited": user["role"] == "admin",
+        "unlimited": get_user(username)["role"] == "admin",
     })
 
 @app.route("/api/start", methods=["POST"])
@@ -725,11 +758,9 @@ def start_scrape():
         return jsonify({"error": "Already running"}), 400
     username = session["user"]
     if get_user_credits(username) <= 0:
-        return jsonify({"error": "no_credits",
-                        "message": "No scrape credits left. Contact admin to top up."}), 403
+        return jsonify({"error": "no_credits", "message": "No scrape credits left. Contact admin to top up."}), 403
     if not deduct_credit(username):
-        return jsonify({"error": "no_credits",
-                        "message": "No scrape credits left. Contact admin to top up."}), 403
+        return jsonify({"error": "no_credits", "message": "No scrape credits left. Contact admin to top up."}), 403
     config = request.get_json(silent=True) or {}
     threading.Thread(target=run_scrape, args=(config, username), daemon=True).start()
     return jsonify({"status": "started", "credits_remaining": get_user_credits(username)})
@@ -763,11 +794,10 @@ def export_results():
     results = scrape_status["results"]
     if fmt == "csv":
         def esc(s): return '"' + str(s).replace('"','""') + '"'
-        lines = ["code,url,source,context,paid,price,found_at"]
+        lines = ["code,url,source,context,found_at"]
         for r in results:
             lines.append(",".join([esc(r["code"]), esc(r["url"]), esc(r["source"]),
-                                   esc(r["context"]), esc("YES" if r.get("paid") else "NO"),
-                                   esc(r.get("price_hint","")), esc(r["found_at"])]))
+                                   esc(r["context"]), esc(r["found_at"])]))
         return Response("\n".join(lines), mimetype="text/csv",
                         headers={"Content-Disposition": "attachment;filename=discord_links.csv"})
     return Response(json.dumps(results, indent=2), mimetype="application/json",
@@ -782,9 +812,10 @@ def clear_results():
 # ── Startup ───────────────────────────────────────────────────────
 init_db()
 bootstrap_admin()
+start_reset_thread()
 
 if __name__ == "__main__":
     print("\n🎯 Discord Link Hunter — Render Edition")
     print(f"   DB path: {DB_PATH}")
     print("👉  Open http://127.0.0.1:5000\n")
-    app.run(debug=False, port=5000, threaded=True)
+    app.run(debug=False, port=int(os.environ.get("PORT", 5000)), host="0.0.0.0", threaded=True)

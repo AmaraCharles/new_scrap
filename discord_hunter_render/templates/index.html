@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Discord Link Hunter</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
   --bg:#0b0d12;--bg2:#12151e;--bg3:#1a1e2a;--bg4:#20253a;
@@ -14,7 +14,6 @@
   --green:#3ba55c;--green-bg:rgba(59,165,92,0.12);
   --yellow:#faa61a;--yellow-bg:rgba(250,166,26,0.12);
   --red:#ed4245;--red-bg:rgba(237,66,69,0.12);
-  --gold:#f59e0b;--gold-bg:rgba(245,158,11,0.12);
   --text:#e3e5eb;--muted:#7b8199;--subtle:#4a4f6a;
   --mono:'Space Mono',monospace;--sans:'DM Sans',sans-serif;
 }
@@ -31,7 +30,7 @@ header .sub{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top
 .header-link:hover{color:var(--text);border-color:var(--border2)}
 .btn-logout{background:transparent;border:1px solid var(--border);border-radius:7px;padding:5px 11px;color:var(--muted);font-family:var(--mono);font-size:11px;cursor:pointer;transition:all 0.15s}
 .btn-logout:hover{border-color:rgba(237,66,69,0.35);color:var(--red)}
-.live-badge{display:flex;align-items:center;gap:6px;background:var(--green-bg);border:1px solid rgba(59,165,92,0.25);border-radius:20px;padding:4px 11px;font-size:11px;font-weight:600;color:var(--green);display:none}
+.live-badge{display:none;align-items:center;gap:6px;background:var(--green-bg);border:1px solid rgba(59,165,92,0.25);border-radius:20px;padding:4px 11px;font-size:11px;font-weight:600;color:var(--green)}
 .live-badge .dot{width:7px;height:7px;background:var(--green);border-radius:50%;animation:pulse 1.2s infinite}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.5;transform:scale(0.85)}}
 
@@ -45,15 +44,12 @@ header .sub{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top
 .panel-head h2{font-size:11px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--muted)}
 .panel-body{padding:13px 16px}
 
-.src-group-label{font-size:10px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:var(--subtle);margin:10px 0 6px;padding-bottom:4px;border-bottom:1px solid var(--border)}
-.src-group-label:first-child{margin-top:0}
 .check-group{display:flex;flex-direction:column;gap:6px}
 .check-item{display:flex;align-items:center;gap:9px;cursor:pointer;padding:7px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;transition:all 0.12s}
 .check-item:hover{border-color:var(--border2)}
 .check-item input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;flex-shrink:0}
 .check-item .ci-label{font-size:12px;font-weight:500;flex:1}
 .check-item .ci-sub{font-size:10px;color:var(--muted)}
-.paid-dot{width:6px;height:6px;background:var(--gold);border-radius:50%;flex-shrink:0;margin-left:auto}
 
 label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}
 input[type=text],textarea,select{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 11px;color:var(--text);font-family:var(--mono);font-size:11.5px;outline:none;transition:border 0.15s}
@@ -61,7 +57,7 @@ input[type=text]:focus,textarea:focus,select:focus{border-color:rgba(88,101,242,
 select{cursor:pointer}
 .form-row{margin-bottom:12px}
 
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:10px 18px;border-radius:9px;font-family:var(--sans);font-size:13px;font-weight:600;cursor:pointer;border:none;transition:all 0.15s;letter-spacing:-0.1px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:10px 18px;border-radius:9px;font-family:var(--sans);font-size:13px;font-weight:600;cursor:pointer;border:none;transition:all 0.15s}
 .btn-primary{background:var(--accent);color:#fff;width:100%;margin-top:4px}
 .btn-primary:hover{background:var(--accent-h)}
 .btn-primary:active{transform:scale(0.98)}
@@ -79,16 +75,13 @@ select{cursor:pointer}
 
 .main{display:flex;flex-direction:column;gap:14px}
 
-.stats-row{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
-@media(max-width:700px){.stats-row{grid-template-columns:repeat(3,1fr)}}
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+@media(max-width:600px){.stats-row{grid-template-columns:repeat(2,1fr)}}
 .stat-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:12px 14px}
 .stat-card .stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px}
 .stat-card .stat-val{font-size:20px;font-weight:600;font-family:var(--mono);letter-spacing:-1px}
 .stat-card.accent .stat-val{color:var(--accent)}
-.stat-card.green .stat-val{color:var(--green)}
-.stat-card.gold .stat-val{color:var(--gold)}
-.stat-card.muted .stat-val{color:var(--muted)}
-.stat-card.red .stat-val{color:var(--red)}
+.stat-card.muted-val .stat-val{color:var(--muted)}
 
 .history-bar{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:11px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
 .history-bar .hb-label{font-size:11px;color:var(--muted);font-family:var(--mono)}
@@ -112,11 +105,8 @@ select{cursor:pointer}
 .count-badge{background:rgba(88,101,242,0.15);border:1px solid rgba(88,101,242,0.25);color:#a5b4fc;font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:5px}
 .results-head-right{display:flex;gap:8px;flex-wrap:wrap}
 
-.filter-row{padding:10px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.filter-row input{font-size:11.5px;padding:7px 10px;flex:1;min-width:160px}
-.filter-toggle{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none;padding:6px 10px;border:1px solid var(--border);border-radius:7px;transition:all 0.12s;white-space:nowrap}
-.filter-toggle input{width:13px;height:13px;accent-color:var(--gold)}
-.filter-toggle:hover{border-color:var(--border2);color:var(--text)}
+.filter-row{padding:10px 16px;border-bottom:1px solid var(--border)}
+.filter-row input{font-size:11.5px;padding:7px 10px;width:100%}
 
 #results-table-wrap{overflow-x:auto;max-height:500px;overflow-y:auto}
 #results-table-wrap::-webkit-scrollbar{width:4px;height:4px}
@@ -127,22 +117,21 @@ thead th{background:var(--bg3);padding:9px 14px;text-align:left;font-size:10px;f
 tbody tr{border-bottom:1px solid var(--border);transition:background 0.1s}
 tbody tr:hover{background:rgba(255,255,255,0.02)}
 tbody tr:last-child{border-bottom:none}
-tbody tr.paid-row{background:rgba(245,158,11,0.03)}
 td{padding:9px 14px;vertical-align:middle}
 .td-code{font-family:var(--mono);color:#a5b4fc;font-size:11px}
 .td-url a{color:var(--accent);text-decoration:none;font-family:var(--mono);font-size:11px}
 .td-url a:hover{text-decoration:underline}
 .td-source{color:var(--muted);font-size:11px;white-space:nowrap}
-.td-ctx{color:var(--subtle);font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.td-ctx{color:var(--subtle);font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .td-time{color:var(--subtle);font-family:var(--mono);font-size:10.5px;white-space:nowrap}
-.paid-badge{display:inline-flex;align-items:center;gap:4px;background:var(--gold-bg);border:1px solid rgba(245,158,11,0.3);color:var(--gold);font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;white-space:nowrap}
-.free-badge{display:inline-flex;align-items:center;gap:4px;background:var(--green-bg);border:1px solid rgba(59,165,92,0.25);color:var(--green);font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px}
 .copy-btn{background:var(--bg3);border:1px solid var(--border);color:var(--muted);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;transition:all 0.12s;font-family:var(--sans)}
 .copy-btn:hover{border-color:var(--border2);color:var(--text)}
 .copy-btn.copied{background:var(--green-bg);border-color:rgba(59,165,92,0.3);color:var(--green)}
 .empty-state{text-align:center;padding:48px 20px;color:var(--muted)}
 .empty-state .es-icon{font-size:36px;margin-bottom:12px}
 .empty-state p{font-size:13px}
+
+#no-credits-banner{display:none;background:rgba(237,66,69,0.08);border:1px solid rgba(237,66,69,0.3);border-radius:10px;padding:12px 16px;font-size:13px;color:var(--red);align-items:center;gap:10px}
 
 #toast{position:fixed;bottom:24px;right:24px;background:var(--bg3);border:1px solid var(--border2);border-radius:10px;padding:10px 16px;font-size:13px;z-index:9999;transform:translateY(20px);opacity:0;transition:all 0.2s;pointer-events:none}
 #toast.show{transform:translateY(0);opacity:1}
@@ -154,7 +143,7 @@ td{padding:9px 14px;vertical-align:middle}
   <div class="logo-wrap">🎯</div>
   <div>
     <h1>Discord Link Hunter</h1>
-    <div class="sub">trading server scraper v3</div>
+    <div class="sub">trading server scraper</div>
   </div>
   <div class="header-user">
     <div class="live-badge" id="live-badge"><div class="dot"></div> LIVE</div>
@@ -174,57 +163,41 @@ td{padding:9px 14px;vertical-align:middle}
       </div>
       <div class="panel-body">
         <div class="check-group">
-          <div class="src-group-label">Free sources</div>
           <label class="check-item">
             <input type="checkbox" id="src-reddit" checked>
-            <div class="ci-label">Reddit</div>
-            <div class="ci-sub">Best volume</div>
+            <div><div class="ci-label">Reddit</div><div class="ci-sub">Best volume</div></div>
           </label>
           <label class="check-item">
             <input type="checkbox" id="src-disboard" checked>
-            <div class="ci-label">Disboard.org</div>
-            <div class="ci-sub">Server directory</div>
+            <div><div class="ci-label">Disboard.org</div><div class="ci-sub">Server directory</div></div>
           </label>
           <label class="check-item">
             <input type="checkbox" id="src-discordme">
-            <div class="ci-label">Discord.me</div>
-            <div class="ci-sub">Public listing</div>
+            <div><div class="ci-label">Discord.me</div><div class="ci-sub">Public listing</div></div>
           </label>
           <label class="check-item">
             <input type="checkbox" id="src-twitter">
-            <div class="ci-label">Twitter/X</div>
-            <div class="ci-sub">Via Nitter mirrors</div>
+            <div><div class="ci-label">Twitter/X</div><div class="ci-sub">Via Nitter mirrors</div></div>
           </label>
           <label class="check-item">
             <input type="checkbox" id="src-stocktwits">
-            <div class="ci-label">StockTwits</div>
-            <div class="ci-sub">Trading social feed</div>
+            <div><div class="ci-label">StockTwits</div><div class="ci-sub">Trading social feed</div></div>
           </label>
-
-          <div class="src-group-label" style="margin-top:14px">Paid server sources <span style="color:var(--gold)">💰</span></div>
           <label class="check-item">
             <input type="checkbox" id="src-whop" checked>
-            <div class="ci-label">Whop.com</div>
-            <div class="ci-sub">Largest paid marketplace</div>
-            <div class="paid-dot"></div>
+            <div><div class="ci-label">Whop.com</div><div class="ci-sub">Community marketplace</div></div>
           </label>
           <label class="check-item">
             <input type="checkbox" id="src-patreon">
-            <div class="ci-label">Patreon</div>
-            <div class="ci-sub">Paid creators</div>
-            <div class="paid-dot"></div>
+            <div><div class="ci-label">Patreon</div><div class="ci-sub">Creator pages</div></div>
           </label>
           <label class="check-item">
             <input type="checkbox" id="src-gumroad">
-            <div class="ci-label">Gumroad</div>
-            <div class="ci-sub">Paid products</div>
-            <div class="paid-dot"></div>
+            <div><div class="ci-label">Gumroad</div><div class="ci-sub">Product pages</div></div>
           </label>
           <label class="check-item">
             <input type="checkbox" id="src-skool">
-            <div class="ci-label">Skool.com</div>
-            <div class="ci-sub">Paid communities</div>
-            <div class="paid-dot"></div>
+            <div><div class="ci-label">Skool.com</div><div class="ci-sub">Community platform</div></div>
           </label>
         </div>
       </div>
@@ -274,23 +247,15 @@ td{padding:9px 14px;vertical-align:middle}
 
     <div class="stats-row">
       <div class="stat-card accent">
-        <div class="stat-label">New Found</div>
+        <div class="stat-label">Found This Run</div>
         <div class="stat-val" id="stat-total">0</div>
       </div>
-      <div class="stat-card gold">
-        <div class="stat-label">Paid</div>
-        <div class="stat-val" id="stat-paid">0</div>
-      </div>
-      <div class="stat-card green">
-        <div class="stat-label">Free</div>
-        <div class="stat-val" id="stat-free">0</div>
-      </div>
-      <div class="stat-card muted">
-        <div class="stat-label">Skipped</div>
+      <div class="stat-card muted-val">
+        <div class="stat-label">Skipped (seen)</div>
         <div class="stat-val" id="stat-skipped">0</div>
       </div>
-      <div class="stat-card red">
-        <div class="stat-label">History</div>
+      <div class="stat-card muted-val">
+        <div class="stat-label">Total History</div>
         <div class="stat-val" id="stat-history">—</div>
       </div>
       <div class="stat-card" id="credits-card" style="border-color:rgba(88,101,242,0.3)">
@@ -299,12 +264,12 @@ td{padding:9px 14px;vertical-align:middle}
       </div>
     </div>
 
-    <div id="no-credits-banner" style="display:none;background:rgba(237,66,69,0.08);border:1px solid rgba(237,66,69,0.3);border-radius:10px;padding:12px 16px;font-size:13px;color:var(--red);display:none;align-items:center;gap:10px">
+    <div id="no-credits-banner">
       <span style="font-size:18px">🚫</span>
-      <span>You have <strong>0 scrape credits</strong> remaining. Contact your admin to top up before you can run a scrape.</span>
+      <span>You have <strong>0 scrape credits</strong> remaining. Contact your admin to top up.</span>
     </div>
 
-    <div class="history-bar" id="history-bar">
+    <div class="history-bar">
       <span class="hb-label">YOUR SERVER HISTORY</span>
       <div class="hb-item">
         <div class="hb-dot" style="background:var(--accent)"></div>
@@ -314,7 +279,7 @@ td{padding:9px 14px;vertical-align:middle}
       <div class="hb-item">
         <div class="hb-dot" style="background:var(--red)"></div>
         <span class="hb-num" id="hb-active">—</span>
-        <span style="font-size:11px;color:var(--muted)">blocked (seen &lt;30d)</span>
+        <span style="font-size:11px;color:var(--muted)">blocked (&lt;30d)</span>
       </div>
       <div class="hb-item">
         <div class="hb-dot" style="background:var(--green)"></div>
@@ -344,27 +309,20 @@ td{padding:9px 14px;vertical-align:middle}
         </div>
       </div>
       <div class="filter-row">
-        <input type="text" id="filter-input" placeholder="🔎  Filter by code, source, context…" oninput="filterTable()">
-        <label class="filter-toggle">
-          <input type="checkbox" id="filter-paid" onchange="filterTable()"> 💰 Paid only
-        </label>
-        <label class="filter-toggle">
-          <input type="checkbox" id="filter-free" onchange="filterTable()"> 🆓 Free only
-        </label>
+        <input type="text" id="filter-input" placeholder="🔎  Filter by code, source, or context…" oninput="filterTable()">
       </div>
       <div id="results-table-wrap">
         <div class="empty-state" id="empty-state">
           <div class="es-icon">🔗</div>
-          <p>No Discord links found yet.<br>Configure your sources above and start the hunt.<br><span style="font-size:11px;color:var(--subtle)">Already-seen servers from past hunts are automatically skipped.</span></p>
+          <p>No Discord links found yet.<br>Configure your sources above and start the hunt.<br><span style="font-size:11px;color:var(--subtle)">Servers you've seen in the last 30 days are automatically skipped.</span></p>
         </div>
         <table id="results-table" style="display:none">
           <thead>
             <tr>
-              <th>Type</th>
               <th>Invite Code</th>
               <th>Link</th>
               <th>Source</th>
-              <th>Context / Price</th>
+              <th>Context</th>
               <th>Found</th>
               <th></th>
             </tr>
@@ -424,18 +382,15 @@ function startScrape() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       sources,
-      keywords:    state.keywords,
-      subreddits:  state.subreddits,
-      depth:       document.getElementById('depth').value,
+      keywords:   state.keywords,
+      subreddits: state.subreddits,
+      depth:      document.getElementById('depth').value,
     })
   }).then(r => r.json()).then(d => {
     if (d.error === 'no_credits') {
-      showNoCreditsBanner();
-      toast('❌ No scrape credits left. Contact your admin.', 'error');
-      return;
+      showNoCreditsBanner(); toast('No scrape credits remaining. Contact your admin.'); return;
     }
     if (d.error) { toast(d.error); return; }
-    // Update credits display immediately after deduction
     if (d.credits_remaining !== undefined) updateCreditsDisplay(d.credits_remaining, false);
     document.getElementById('start-btn').disabled = true;
     document.getElementById('stop-btn').style.display = 'flex';
@@ -446,15 +401,14 @@ function startScrape() {
 }
 
 function showNoCreditsBanner() {
-  const banner = document.getElementById('no-credits-banner');
-  banner.style.display = 'flex';
+  document.getElementById('no-credits-banner').style.display = 'flex';
   document.getElementById('start-btn').disabled = true;
 }
 
 function updateCreditsDisplay(credits, unlimited) {
-  const el   = document.getElementById('stat-credits');
-  const card = document.getElementById('credits-card');
-  const btn  = document.getElementById('start-btn');
+  const el     = document.getElementById('stat-credits');
+  const card   = document.getElementById('credits-card');
+  const btn    = document.getElementById('start-btn');
   const banner = document.getElementById('no-credits-banner');
   if (unlimited) {
     el.textContent = '∞';
@@ -471,13 +425,11 @@ function updateCreditsDisplay(credits, unlimited) {
     } else if (credits <= 3) {
       el.style.color = 'var(--yellow)';
       card.style.borderColor = 'rgba(250,166,26,0.3)';
-      btn.disabled = false;
-      banner.style.display = 'none';
+      btn.disabled = false; banner.style.display = 'none';
     } else {
       el.style.color = 'var(--accent)';
       card.style.borderColor = 'rgba(88,101,242,0.3)';
-      btn.disabled = false;
-      banner.style.display = 'none';
+      btn.disabled = false; banner.style.display = 'none';
     }
   }
 }
@@ -499,11 +451,10 @@ function pollStatus() {
   fetch('/api/status').then(r => r.json()).then(d => {
     if (!d.running && state.polling) {
       stopPolling(); resetControls();
-      toast(`✅ Done! ${d.count} new servers found, ${d.skipped} skipped.`);
-      loadHistory();
+      toast(`Done! ${d.count} new servers found, ${d.skipped} skipped.`);
+      loadHistory(); loadCredits();
     }
-    const newLogs = d.progress.slice(lastLogCount);
-    newLogs.forEach(l => appendLog(l.msg, l.level));
+    d.progress.slice(lastLogCount).forEach(l => appendLog(l.msg, l.level));
     lastLogCount = d.progress.length;
     document.getElementById('stat-skipped').textContent = d.skipped || 0;
     if (d.count !== lastResultCount) { lastResultCount = d.count; fetchResults(); }
@@ -514,7 +465,7 @@ function fetchResults() {
   fetch('/api/results').then(r => r.json()).then(data => {
     state.results = data;
     renderResults(data);
-    updateStats(data);
+    document.getElementById('stat-total').textContent = data.length;
   });
 }
 
@@ -527,30 +478,19 @@ function appendLog(msg, level='info') {
   box.appendChild(line);
   box.scrollTop = box.scrollHeight;
 }
-function clearLog() {
-  document.getElementById('log-box').innerHTML = '';
-  lastLogCount = 0;
-}
+function clearLog() { document.getElementById('log-box').innerHTML = ''; lastLogCount = 0; }
 
 function renderResults(data) {
   const filterText = document.getElementById('filter-input').value.toLowerCase();
-  const paidOnly   = document.getElementById('filter-paid').checked;
-  const freeOnly   = document.getElementById('filter-free').checked;
+  const filtered   = filterText
+    ? data.filter(r => r.code.toLowerCase().includes(filterText) ||
+                       r.source.toLowerCase().includes(filterText) ||
+                       r.context.toLowerCase().includes(filterText))
+    : data;
 
-  let filtered = data;
-  if (filterText) {
-    filtered = filtered.filter(r =>
-      r.code.toLowerCase().includes(filterText) ||
-      r.source.toLowerCase().includes(filterText) ||
-      r.context.toLowerCase().includes(filterText)
-    );
-  }
-  if (paidOnly) filtered = filtered.filter(r => r.paid);
-  if (freeOnly) filtered = filtered.filter(r => !r.paid);
-
-  const empty  = document.getElementById('empty-state');
-  const table  = document.getElementById('results-table');
-  const tbody  = document.getElementById('results-body');
+  const empty = document.getElementById('empty-state');
+  const table = document.getElementById('results-table');
+  const tbody = document.getElementById('results-body');
 
   if (!filtered.length) {
     empty.style.display = 'block'; table.style.display = 'none'; return;
@@ -558,10 +498,7 @@ function renderResults(data) {
   empty.style.display = 'none'; table.style.display = 'table';
 
   tbody.innerHTML = filtered.map(r => `
-    <tr class="${r.paid ? 'paid-row' : ''}">
-      <td>${r.paid
-        ? `<span class="paid-badge">💰 PAID${r.price_hint ? ' · '+esc(r.price_hint) : ''}</span>`
-        : `<span class="free-badge">FREE</span>`}</td>
+    <tr>
       <td class="td-code">${esc(r.code)}</td>
       <td class="td-url"><a href="${esc(r.url)}" target="_blank">${esc(r.url)}</a></td>
       <td class="td-source">${esc(r.source)}</td>
@@ -576,13 +513,6 @@ function renderResults(data) {
 }
 
 function filterTable() { renderResults(state.results); }
-
-function updateStats(data) {
-  const paid = data.filter(r => r.paid).length;
-  document.getElementById('stat-total').textContent   = data.length;
-  document.getElementById('stat-paid').textContent    = paid;
-  document.getElementById('stat-free').textContent    = data.length - paid;
-}
 
 function loadHistory() {
   fetch('/api/me/history').then(r => r.json()).then(d => {
@@ -608,7 +538,8 @@ function copyLink(url, btn) {
 function exportResults(fmt) { window.location.href = `/api/export?fmt=${fmt}`; }
 function clearResults() {
   fetch('/api/clear', { method: 'POST' }).then(() => {
-    state.results = []; renderResults([]); updateStats([]);
+    state.results = []; renderResults([]);
+    document.getElementById('stat-total').textContent   = 0;
     document.getElementById('stat-skipped').textContent = 0;
     lastResultCount = 0;
   });
