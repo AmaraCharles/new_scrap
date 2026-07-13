@@ -71,10 +71,11 @@ import sqlite3 as _sqlite3
 
 class _FakeCursor:
     """Mimics sqlite3 cursor so fetchone/fetchall work as expected."""
-    def __init__(self, rows, cols, lastrowid=None):
+    def __init__(self, rows, cols, lastrowid=None, rowcount=0):
         self._rows       = rows or []
         self._cols       = cols or []
         self.lastrowid   = lastrowid
+        self.rowcount    = len(rows) if rows else rowcount
         self.description = [(c,) for c in self._cols]
         self._idx        = 0
 
@@ -151,12 +152,13 @@ class TursoConn:
             # Ignore "already exists" and "duplicate column" errors
             if any(x in msg.lower() for x in
                    ["already exists", "duplicate column", "table already"]):
-                return _FakeCursor([], [])
+                return _FakeCursor([], [], rowcount=0)
             raise RuntimeError(f"Turso error: {msg}")
-        rows  = result.get("response", {}).get("result", {}).get("rows", [])
-        cols  = [c["name"] for c in
-                 result.get("response", {}).get("result", {}).get("cols", [])]
-        lrid  = result.get("response", {}).get("result", {}).get("last_insert_rowid")
+        res_data     = result.get("response", {}).get("result", {})
+        rows         = res_data.get("rows", [])
+        cols         = [c["name"] for c in res_data.get("cols", [])]
+        lrid         = res_data.get("last_insert_rowid")
+        affected     = res_data.get("affected_row_count", 0)
         # rows come as lists of {"type":..,"value":...} objects
         parsed_rows = []
         for row in rows:
@@ -167,7 +169,7 @@ class TursoConn:
                  else c.get("value"))
                 for c in row
             ])
-        return _FakeCursor(parsed_rows, cols, lastrowid=lrid)
+        return _FakeCursor(parsed_rows, cols, lastrowid=lrid, rowcount=affected)
 
     # ── Public interface ──────────────────────────────────────────
     def execute(self, sql, params=()):
@@ -313,14 +315,19 @@ def deduct_credit(username):
     user = get_user(username)
     if not user: return False
     if user["role"] == "admin": return True
+    if user.get("scrape_credits", 0) <= 0: return False
     with get_db() as conn:
         cur = conn.execute(
             "UPDATE users SET scrape_credits = scrape_credits - 1 "
             "WHERE username=? AND scrape_credits > 0",
             (username,)
         )
-        # rowcount=0 means the WHERE scrape_credits>0 guard blocked it — already 0
-        return cur.rowcount > 0
+        # Check rowcount — works for both Turso and local sqlite
+        if hasattr(cur, "rowcount") and cur.rowcount == 0:
+            return False
+    # Verify by re-reading (definitive check for Turso)
+    updated = get_user(username)
+    return updated is not None
 
 def set_credits(username, amount, also_set_daily=False):
     """Set a user's current credits. Optionally also update their daily allowance."""
@@ -462,7 +469,11 @@ def get_scrape(username):
     On first access, restores persisted results from DB."""
     with _scrapes_lock:
         if username not in user_scrapes:
-            persisted = load_results_from_db(username)
+            try:
+                persisted = load_results_from_db(username)
+            except Exception as e:
+                logger.warning(f"Could not load persisted results for {username}: {e}")
+                persisted = []
             user_scrapes[username] = {
                 "running":    False,
                 "progress":   [],
@@ -1727,16 +1738,24 @@ def get_credits():
 @login_required
 def start_scrape():
     username = session["user"]
-    st = get_scrape(username)
-    if st["running"]:
-        return jsonify({"error": "Already running"}), 400
-    if get_user_credits(username) <= 0:
-        return jsonify({"error": "no_credits", "message": "No scrape credits left. Contact admin to top up."}), 403
-    if not deduct_credit(username):
-        return jsonify({"error": "no_credits", "message": "No scrape credits left. Contact admin to top up."}), 403
-    config = request.get_json(silent=True) or {}
-    threading.Thread(target=run_scrape, args=(config, username), daemon=True).start()
-    return jsonify({"status": "started", "credits_remaining": get_user_credits(username)})
+    try:
+        st = get_scrape(username)
+        if st["running"]:
+            return jsonify({"error": "Already running"}), 400
+        credits = get_user_credits(username)
+        if credits <= 0:
+            return jsonify({"error": "no_credits",
+                            "message": "No scrape credits left. Contact admin to top up."}), 403
+        if not deduct_credit(username):
+            return jsonify({"error": "no_credits",
+                            "message": "No scrape credits left. Contact admin to top up."}), 403
+        config = request.get_json(silent=True) or {}
+        threading.Thread(target=run_scrape, args=(config, username), daemon=True).start()
+        return jsonify({"status": "started",
+                        "credits_remaining": get_user_credits(username)})
+    except Exception as e:
+        logger.exception("start_scrape error")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 @app.route("/api/stop", methods=["POST"])
 @login_required
