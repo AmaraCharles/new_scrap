@@ -192,9 +192,22 @@ class TursoConn:
         if not self._use_http:
             self._local.executemany(sql, params_list)
             return
+        params_list = list(params_list)
+        if not params_list:
+            return
         stmts = [self._make_stmt(sql, p) for p in params_list]
-        if stmts:
-            self._http_exec(stmts)
+        try:
+            resp    = self._http_exec(stmts)
+            results = resp.get("results", [])
+            for r in results:
+                if r.get("type") == "error":
+                    msg = r.get("error", {}).get("message", "")
+                    # Ignore expected constraint errors
+                    if not any(x in msg.lower() for x in
+                               ["already exists", "unique", "duplicate"]):
+                        logger.warning(f"Turso executemany error: {msg}")
+        except Exception as e:
+            logger.error(f"Turso executemany failed: {e}")
 
     def commit(self):
         if not self._use_http and self._local:
@@ -395,11 +408,18 @@ def start_reset_thread():
 # ── Server history ────────────────────────────────────────────────
 def add_to_user_history(username, results):
     now  = datetime.datetime.now().isoformat()
-    rows = [(username, r["code"], now) for r in results]
+    saved = 0
     with get_db() as conn:
-        conn.executemany(
-            "INSERT OR IGNORE INTO server_history (username, code, first_seen) VALUES (?,?,?)", rows
-        )
+        for r in results:
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO server_history (username, code, first_seen) VALUES (?,?,?)",
+                    (username, r["code"], now)
+                )
+                saved += 1
+            except Exception as e:
+                logger.warning(f"History insert failed for {r['code']}: {e}")
+    logger.info(f"Saved {saved}/{len(results)} servers to history for {username}")
 
 def is_fresh_for_user(code, username):
     with get_db() as conn:
@@ -433,14 +453,24 @@ def save_results_to_db(username, results, session_ts):
     """Persist current scrape results to DB so they survive restarts."""
     if not results:
         return
+    saved = 0
     with get_db() as conn:
-        conn.execute("DELETE FROM scrape_results WHERE username=?", (username,))
-        conn.executemany(
-            "INSERT INTO scrape_results (username, code, url, source, context, found_at, session_ts) "
-            "VALUES (?,?,?,?,?,?,?)",
-            [(username, r["code"], r["url"], r["source"],
-              r.get("context",""), r["found_at"], session_ts) for r in results]
-        )
+        try:
+            conn.execute("DELETE FROM scrape_results WHERE username=?", (username,))
+        except Exception as e:
+            logger.warning(f"Could not clear old results: {e}")
+        for r in results:
+            try:
+                conn.execute(
+                    "INSERT INTO scrape_results (username, code, url, source, context, found_at, session_ts) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (username, r["code"], r["url"], r["source"],
+                     r.get("context", ""), r["found_at"], session_ts)
+                )
+                saved += 1
+            except Exception as e:
+                logger.warning(f"Result insert failed for {r['code']}: {e}")
+    logger.info(f"Saved {saved}/{len(results)} results to DB for {username}")
 
 def load_results_from_db(username):
     """Load last scrape results from DB."""
