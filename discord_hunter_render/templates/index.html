@@ -478,23 +478,31 @@ let _doneConfirmCount = 0;
 
 function pollStatus() {
   fetch('/api/status').then(r => r.json()).then(d => {
-    if (!d.running && state.polling) {
-      // Wait for 3 consecutive "not running" responses before declaring done
-      // prevents false-stops between subreddit scans
-      _doneConfirmCount++;
-      if (_doneConfirmCount < 3) return;
-      stopPolling(); resetControls();
-      _doneConfirmCount = 0;
-      toast(`Done! ${d.count} new servers found, ${d.skipped} skipped.`);
-      loadHistory(); loadCredits();
-      fetchResults(); // final fetch to make sure UI is up to date
-    } else {
-      _doneConfirmCount = 0; // reset if still running
-    }
+    // Always append new log lines
     d.progress.slice(lastLogCount).forEach(l => appendLog(l.msg, l.level));
     lastLogCount = d.progress.length;
     document.getElementById('stat-skipped').textContent = d.skipped || 0;
-    if (d.count !== lastResultCount) { lastResultCount = d.count; fetchResults(); }
+
+    // Fetch results any time count changes OR on every tick while running
+    if (d.count !== lastResultCount || d.running) {
+      lastResultCount = d.count;
+      if (d.count > 0) fetchResults();
+    }
+
+    if (!d.running && state.polling) {
+      // Require 5 consecutive not-running responses — fast scrapes finish
+      // in seconds and we need time for the final fetchResults to complete
+      _doneConfirmCount++;
+      if (_doneConfirmCount < 5) return;
+      stopPolling(); resetControls();
+      _doneConfirmCount = 0;
+      // Always do a final fetch before declaring done
+      fetchResults();
+      loadHistory(); loadCredits();
+      toast(`Done! ${d.count} new servers found, ${d.skipped} skipped.`);
+    } else if (d.running) {
+      _doneConfirmCount = 0;
+    }
   }).catch(() => {
     // Network hiccup — don't stop polling
   });
@@ -600,19 +608,16 @@ async function initOnLoad() {
   loadCredits();
 
   try {
-    // Check if a scrape is already running or has results waiting
     const statusRes = await fetch('/api/status');
     const status    = await statusRes.json();
 
+    // Always restore results if they exist — running or not
     if (status.count > 0) {
-      // Results exist on the server — fetch and display them immediately
       lastResultCount = status.count;
-      fetchResults();
+      await fetchResults();
     }
 
     if (status.running) {
-      // A scrape is already in progress (e.g. user refreshed mid-scrape)
-      // Resume the live UI without starting a new scrape
       document.getElementById('start-btn').disabled = true;
       document.getElementById('stop-btn').style.display = 'flex';
       document.getElementById('live-badge').style.display = 'flex';
@@ -623,7 +628,7 @@ async function initOnLoad() {
       startPolling();
     }
   } catch (e) {
-    // Silent fail — page still works, just won't restore state
+    // Silent fail
   }
 }
 
