@@ -112,9 +112,11 @@ class TursoConn:
     # ── HTTP execution ────────────────────────────────────────────
     def _http_exec(self, statements):
         """
-        POST a batch of statements to Turso pipeline endpoint.
-        statements: list of {"type":"execute","stmt":{"sql":...,"args":[...]}}
-        Returns list of result dicts.
+        POST to Turso HTTP API pipeline endpoint.
+        Turso v2 pipeline format:
+          Request:  {"requests": [{"type":"execute","stmt":{"sql":"...","args":[...]}}]}
+          Response: {"results": [{"type":"ok","response":{"type":"execute","result":{...}}}]}
+                 or {"results": [{"type":"error","error":{"message":"..."}}]}
         """
         payload = json.dumps({"requests": statements}).encode()
         req     = urllib.request.Request(
@@ -128,9 +130,13 @@ class TursoConn:
         )
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
-                return json.loads(resp.read())
+                raw = json.loads(resp.read())
+                # Log full response in debug mode
+                logger.debug(f"Turso response: {json.dumps(raw)[:500]}")
+                return raw
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="ignore")
+            logger.error(f"Turso HTTP {e.code}: {body[:300]}")
             raise RuntimeError(f"Turso HTTP {e.code}: {body}") from e
 
     def _make_stmt(self, sql, params=()):
@@ -138,6 +144,8 @@ class TursoConn:
         for p in (params or []):
             if p is None:
                 args.append({"type": "null"})
+            elif isinstance(p, bool):
+                args.append({"type": "integer", "value": "1" if p else "0"})
             elif isinstance(p, int):
                 args.append({"type": "integer", "value": str(p)})
             elif isinstance(p, float):
@@ -147,28 +155,59 @@ class TursoConn:
         return {"type": "execute", "stmt": {"sql": sql, "args": args}}
 
     def _parse_result(self, result):
+        """
+        Parse one entry from the Turso pipeline results array.
+        Turso v2 wraps each result as:
+          {"type": "ok", "response": {"type": "execute", "result": {cols, rows, ...}}}
+        or:
+          {"type": "error", "error": {"message": "..."}}
+        """
+        # Handle error responses
         if result.get("type") == "error":
             msg = result.get("error", {}).get("message", "Unknown error")
-            # Ignore "already exists" and "duplicate column" errors
             if any(x in msg.lower() for x in
-                   ["already exists", "duplicate column", "table already"]):
+                   ["already exists", "unique", "duplicate", "constraint"]):
                 return _FakeCursor([], [], rowcount=0)
-            raise RuntimeError(f"Turso error: {msg}")
-        res_data     = result.get("response", {}).get("result", {})
-        rows         = res_data.get("rows", [])
-        cols         = [c["name"] for c in res_data.get("cols", [])]
-        lrid         = res_data.get("last_insert_rowid")
-        affected     = res_data.get("affected_row_count", 0)
-        # rows come as lists of {"type":..,"value":...} objects
+            logger.warning(f"Turso stmt error: {msg}")
+            return _FakeCursor([], [], rowcount=0)
+
+        # Unwrap the ok response — handle both flat and nested formats
+        if result.get("type") == "ok":
+            inner = result.get("response", {})
+            # v2 format: response.result
+            if "result" in inner:
+                res_data = inner["result"]
+            else:
+                res_data = inner
+        else:
+            # Fallback: maybe result IS the data directly (older format)
+            res_data = result
+
+        rows     = res_data.get("rows", [])
+        cols     = [c["name"] for c in res_data.get("cols", [])]
+        lrid     = res_data.get("last_insert_rowid")
+        affected = res_data.get("affected_row_count", 0)
+
         parsed_rows = []
         for row in rows:
-            parsed_rows.append([
-                (None if c.get("type") == "null"
-                 else int(c["value"]) if c.get("type") == "integer"
-                 else float(c["value"]) if c.get("type") == "float"
-                 else c.get("value"))
-                for c in row
-            ])
+            parsed_row = []
+            for cell in row:
+                if isinstance(cell, dict):
+                    t = cell.get("type", "text")
+                    v = cell.get("value")
+                    if t == "null" or v is None:
+                        parsed_row.append(None)
+                    elif t == "integer":
+                        parsed_row.append(int(v))
+                    elif t == "float":
+                        parsed_row.append(float(v))
+                    else:
+                        parsed_row.append(v)
+                else:
+                    # Already a plain value
+                    parsed_row.append(cell)
+            parsed_rows.append(parsed_row)
+
         return _FakeCursor(parsed_rows, cols, lastrowid=lrid, rowcount=affected)
 
     # ── Public interface ──────────────────────────────────────────
@@ -1826,6 +1865,60 @@ def export_results():
                         headers={"Content-Disposition": "attachment;filename=discord_links.csv"})
     return Response(json.dumps(results, indent=2), mimetype="application/json",
                     headers={"Content-Disposition": "attachment;filename=discord_links.json"})
+
+@app.route("/api/db-test")
+@login_required
+def db_test():
+    """Diagnostic endpoint — tests Turso connectivity and write/read."""
+    results = {}
+    try:
+        # Test 1: basic connectivity
+        with get_db() as conn:
+            row = conn.execute("SELECT 1 as x").fetchone()
+            results["connect"] = "OK" if row else "FAIL — no row returned"
+            results["select_value"] = row.get("x") if row else None
+
+        # Test 2: write to server_history
+        test_code = f"__test_{int(time.time())}"
+        with get_db() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO server_history (username,code,first_seen) VALUES (?,?,?)",
+                (session["user"], test_code, datetime.datetime.now().isoformat())
+            )
+        results["write"] = "OK"
+
+        # Test 3: read it back
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT code FROM server_history WHERE username=? AND code=?",
+                (session["user"], test_code)
+            ).fetchone()
+        results["read_back"] = "OK" if row else "FAIL — write didn't persist"
+
+        # Cleanup
+        with get_db() as conn:
+            conn.execute(
+                "DELETE FROM server_history WHERE username=? AND code=?",
+                (session["user"], test_code)
+            )
+
+        # Test 4: count history
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) as c FROM server_history WHERE username=?",
+                (session["user"],)
+            ).fetchone()
+        results["history_count"] = row.get("c") if row else 0
+
+        results["turso_url"]    = TURSO_HTTP_URL or "NOT SET"
+        results["using_turso"]  = bool(TURSO_HTTP_URL and TURSO_TOKEN)
+        results["status"] = "ALL OK" if results["read_back"] == "OK" else "WRITE FAILED"
+
+    except Exception as e:
+        results["error"] = str(e)
+        results["status"] = "ERROR"
+
+    return jsonify(results)
 
 @app.route("/api/clear", methods=["POST"])
 @login_required
