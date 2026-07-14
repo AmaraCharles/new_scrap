@@ -508,12 +508,17 @@ function pollStatus() {
   });
 }
 
-function fetchResults() {
-  fetch('/api/results').then(r => r.json()).then(data => {
+async function fetchResults() {
+  try {
+    const r    = await fetch('/api/results');
+    const data = await r.json();
+    console.log('[DLH] fetchResults:', data.length, 'results', data[0] || '');
     state.results = data;
     renderResults(data);
     document.getElementById('stat-total').textContent = data.length;
-  });
+  } catch(e) {
+    console.error('[DLH] fetchResults error:', e);
+  }
 }
 
 function appendLog(msg, level='info') {
@@ -528,35 +533,41 @@ function appendLog(msg, level='info') {
 function clearLog() { document.getElementById('log-box').innerHTML = ''; lastLogCount = 0; }
 
 function renderResults(data) {
-  const filterText = document.getElementById('filter-input').value.toLowerCase();
-  const filtered   = filterText
-    ? data.filter(r => r.code.toLowerCase().includes(filterText) ||
-                       r.source.toLowerCase().includes(filterText) ||
-                       r.context.toLowerCase().includes(filterText))
-    : data;
+  try {
+    const filterText = document.getElementById('filter-input').value.toLowerCase();
+    const filtered   = filterText
+      ? data.filter(r => r.code.toLowerCase().includes(filterText) ||
+                         r.source.toLowerCase().includes(filterText) ||
+                         r.context.toLowerCase().includes(filterText))
+      : data;
 
-  const empty = document.getElementById('empty-state');
-  const table = document.getElementById('results-table');
-  const tbody = document.getElementById('results-body');
+    const empty = document.getElementById('empty-state');
+    const table = document.getElementById('results-table');
+    const tbody = document.getElementById('results-body');
 
-  if (!filtered.length) {
-    empty.style.display = 'block'; table.style.display = 'none'; return;
+    if (!filtered.length) {
+      empty.style.display = 'block'; table.style.display = 'none'; return;
+    }
+    empty.style.display = 'none'; table.style.display = 'table';
+
+    tbody.innerHTML = filtered.map(r => `
+      <tr>
+        <td class="td-code">${esc(r.code||'')}</td>
+        <td class="td-url"><a href="${esc(r.url||'')}" target="_blank">${esc(r.url||'')}</a></td>
+        <td class="td-source">${esc(r.source||'')}</td>
+        <td class="td-ctx" title="${esc(r.context||'')}">${esc(r.context||'')}</td>
+        <td class="td-time">${esc(r.found_at||'')}</td>
+        <td><button class="copy-btn" onclick="copyLink('${esc(r.url||'')}',this)">Copy</button></td>
+      </tr>
+    `).join('');
+
+    document.getElementById('count-badge').textContent =
+      `${filtered.length} link${filtered.length !== 1 ? 's' : ''}`;
+
+    console.log('[DLH] renderResults: rendered', filtered.length, 'rows');
+  } catch(e) {
+    console.error('[DLH] renderResults error:', e);
   }
-  empty.style.display = 'none'; table.style.display = 'table';
-
-  tbody.innerHTML = filtered.map(r => `
-    <tr>
-      <td class="td-code">${esc(r.code)}</td>
-      <td class="td-url"><a href="${esc(r.url)}" target="_blank">${esc(r.url)}</a></td>
-      <td class="td-source">${esc(r.source)}</td>
-      <td class="td-ctx" title="${esc(r.context)}">${esc(r.context)}</td>
-      <td class="td-time">${esc(r.found_at)}</td>
-      <td><button class="copy-btn" onclick="copyLink('${esc(r.url)}',this)">Copy</button></td>
-    </tr>
-  `).join('');
-
-  document.getElementById('count-badge').textContent =
-    `${filtered.length} link${filtered.length !== 1 ? 's' : ''}`;
 }
 
 function filterTable() { renderResults(state.results); }
@@ -633,6 +644,37 @@ async function initOnLoad() {
 }
 
 initOnLoad();
+
+// Re-sync when user returns to this tab after switching away
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    // Always re-fetch results in case they were found while tab was hidden
+    fetch('/api/status').then(r => r.json()).then(d => {
+      if (d.count > 0 && d.count !== lastResultCount) {
+        lastResultCount = d.count;
+        fetchResults();
+      }
+      // If scrape finished while tab was hidden, reset UI and show results
+      if (!d.running && state.polling) {
+        stopPolling(); resetControls();
+        _doneConfirmCount = 0;
+        fetchResults();
+        loadHistory(); loadCredits();
+        toast(`Done! ${d.count} new servers found, ${d.skipped} skipped.`);
+      }
+      // If scrape started while tab was hidden, resume polling
+      if (d.running && !state.polling) {
+        document.getElementById('start-btn').disabled = true;
+        document.getElementById('stop-btn').style.display = 'flex';
+        document.getElementById('live-badge').style.display = 'flex';
+        startPolling();
+      }
+      // Always sync log
+      d.progress.slice(lastLogCount).forEach(l => appendLog(l.msg, l.level));
+      lastLogCount = d.progress.length;
+    }).catch(() => {});
+  }
+});
 </script>
 </body>
 </html>

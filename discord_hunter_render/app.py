@@ -587,13 +587,26 @@ def add_result(code, source, context=""):
         st["skipped"] += 1
         return False
     st["seen_codes"].add(code)
-    st["results"].append({
+    result = {
         "code":     code,
         "url":      build_invite_url(code),
         "source":   source,
         "context":  context[:140],
         "found_at": datetime.datetime.now().strftime("%H:%M:%S"),
-    })
+    }
+    st["results"].append(result)
+
+    # Save to Turso immediately — don't wait for scrape to finish
+    try:
+        now = datetime.datetime.now().isoformat()
+        with get_db() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO server_history (username, code, first_seen) VALUES (?,?,?)",
+                (username, code, now)
+            )
+    except Exception as e:
+        logger.warning(f"Real-time history save failed for {code}: {e}")
+
     return True
 
 # ── Proxy configuration ──────────────────────────────────────────
@@ -1543,6 +1556,8 @@ def run_scrape(config, username):
     st = get_scrape(username)
     st.update({"running": True, "results": [], "skipped": 0,
                "seen_codes": set(), "progress": [], "error": None})
+    # Hold a direct reference — don't re-fetch st at end of scrape
+    # because get_scrape() with a fresh call might return wrong object
     try:
         sources    = config.get("sources", ["reddit","disboard"])
         custom_kw  = config.get("keywords", [])
@@ -1602,21 +1617,24 @@ def run_scrape(config, username):
             log(f"  → {n} new from Reddit search")
         if "reddit_extra"  in sources: log("🔍 Scraping Reddit extra keywords…");  n = scrape_reddit_extra_keywords(keywords);                                     log(f"  → {n} new")
 
-        st    = get_scrape(username)
         total = len(st["results"])
         log(f"✅ Done! {total} new servers found, {st['skipped']} already-seen skipped.", "info")
+        logger.info(f"[{username}] Scrape complete — {total} results, history saved in real-time")
         if st["results"]:
-            add_to_user_history(username, st["results"])
-            session_ts = datetime.datetime.now().isoformat()
-            save_results_to_db(username, st["results"], session_ts)
+            save_results_to_db(username, st["results"], datetime.datetime.now().isoformat())
 
     except Exception as e:
-        st = get_scrape(username)
         st["error"] = str(e)
         log(f"❌ Fatal error: {e}", "error")
         logger.exception("Scrape error")
     finally:
-        get_scrape(username)["running"] = False
+        # Save scrape_results for session restore even if stopped/crashed
+        if st["results"]:
+            try:
+                save_results_to_db(username, st["results"], datetime.datetime.now().isoformat())
+            except Exception as e:
+                logger.warning(f"[{username}] Finally save_results failed: {e}")
+        st["running"] = False
 
 # ── Auth routes ───────────────────────────────────────────────────
 @app.route("/login", methods=["GET"])
