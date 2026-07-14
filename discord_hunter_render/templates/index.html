@@ -648,30 +648,31 @@ initOnLoad();
 // Re-sync when user returns to this tab after switching away
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    // Always re-fetch results in case they were found while tab was hidden
     fetch('/api/status').then(r => r.json()).then(d => {
-      if (d.count > 0 && d.count !== lastResultCount) {
-        lastResultCount = d.count;
+      // Always re-fetch results when returning to tab — on mobile the browser
+      // may have cleared state.results while the page was backgrounded
+      if (d.count > 0) {
+        lastResultCount = 0; // reset so fetchResults always runs
         fetchResults();
       }
-      // If scrape finished while tab was hidden, reset UI and show results
+      // Scrape finished while tab was hidden
       if (!d.running && state.polling) {
         stopPolling(); resetControls();
         _doneConfirmCount = 0;
-        fetchResults();
         loadHistory(); loadCredits();
         toast(`Done! ${d.count} new servers found, ${d.skipped} skipped.`);
       }
-      // If scrape started while tab was hidden, resume polling
+      // Scrape started while tab was hidden — resume polling
       if (d.running && !state.polling) {
         document.getElementById('start-btn').disabled = true;
         document.getElementById('stop-btn').style.display = 'flex';
         document.getElementById('live-badge').style.display = 'flex';
         startPolling();
       }
-      // Always sync log
+      // Sync log
       d.progress.slice(lastLogCount).forEach(l => appendLog(l.msg, l.level));
       lastLogCount = d.progress.length;
+      document.getElementById('stat-skipped').textContent = d.skipped || 0;
     }).catch(() => {});
   }
 });
