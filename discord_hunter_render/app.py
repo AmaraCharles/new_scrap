@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 #   TURSO_TOKEN = your-auth-token
 TURSO_URL   = os.environ.get("TURSO_URL", "")
 TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 # Convert libsql:// URL to HTTPS for the REST API
 def _turso_http_url():
@@ -50,20 +51,110 @@ DISCORD_PATTERN = re.compile(
 )
 
 TRADING_SUBREDDITS = [
-    "Forex", "Daytrading", "stocks", "investing", "Cryptotrading",
-    "algotrading", "options", "StockMarket", "pennystocks", "Wallstreetbets",
+    # Core trading
+    "Forex", "Daytrading", "stocks", "investing", "algotrading",
+    "options", "StockMarket", "pennystocks", "wallstreetbets",
     "cryptocurrency", "Bitcoin", "Trading", "FuturesTrading", "scalping",
-    "TradingView", "Etoro", "Robinhood", "thetagang", "Spreads",
+    "TradingView", "thetagang", "Spreads", "Cryptotrading",
+    # Wealth / personal finance communities that share Discord links
+    "personalfinance", "financialindependence", "fatFIRE", "ChubbyFIRE",
+    "Bogleheads", "ValueInvesting", "SecurityAnalysis", "dividends",
+    "RobinhoodPennyStocks", "smallstreetbets", "Superstonk",
+    # Prop firm / funded trading
+    "PropFirms", "FundedTrader", "FTMO",
+    # Crypto niches
+    "defi", "ethtrader", "SatoshiStreetBets", "CryptoMoonShots",
+    "NFT", "altcoin", "CryptoCurrency",
+    # International
+    "IndiaInvestments", "UKInvesting", "EuropeFIRE", "AusFinance",
+    "CanadianInvestor", "LatinAmerica",
 ]
 
+# ── Keyword pools — rotated through on each scrape ───────────────
+# Each list is a separate search category. The scraper picks one
+# keyword per run from the active category to keep bank data clean.
+
 TRADING_KEYWORDS = [
-    "discord server trading", "discord forex signals", "discord crypto trading",
-    "discord stock trading", "discord options trading", "discord futures trading",
-    "discord day trading", "join our discord trading", "discord.gg trading signals",
-    "trading discord invite", "free trading discord", "discord swing trading",
-    "discord prop firm", "discord funded trader", "discord algo trading",
-    "discord scalping signals", "discord options flow", "paid discord trading",
+    # English action phrases
+    "discord server trading", "discord forex signals",
+    "discord crypto trading", "discord stock trading",
+    "discord options trading", "discord futures trading",
+    "discord day trading", "join discord trading",
+    "discord prop firm", "discord funded trader",
+    "discord algo trading", "discord scalping signals",
+    "discord options flow", "discord swing trading",
     "discord.gg forex", "discord.gg crypto signals",
+    "free trading discord server", "trading signals discord invite",
+    "discord copy trading", "discord investment community",
+    # Niche English — less competed
+    "discord funded account signals", "discord smart money trading",
+    "discord ICT trading", "discord order flow",
+    "discord supply demand trading", "discord price action",
+    "discord tape reading", "discord market maker",
+    "discord dark pool signals", "discord unusual options activity",
+    # German
+    "Aktien Discord", "Börse Discord Server", "Aktienhandel Discord",
+    "Daytrading Discord", "DAX Discord Community", "Trading Discord Deutschland",
+    # French
+    "Bourse Discord", "Trading Discord France", "CAC 40 Discord",
+    "investissement Discord", "analyse technique Discord",
+    # Spanish
+    "Bolsa Discord", "Trading Discord España", "IBEX Discord",
+    "inversión Discord", "señales trading Discord",
+    # Italian
+    "Borsa Discord Italia", "Trading Discord Italia",
+    "azioni Discord", "investimenti Discord",
+    # Portuguese / Brazil
+    "Bolsa Discord Brasil", "B3 Discord", "trader Discord Brasil",
+    "investimentos Discord", "sinais trading Discord",
+    # Dutch
+    "Beleggen Discord", "Aandelen Discord", "Trading Discord Nederland",
+    # Polish
+    "Giełda Discord", "Trading Discord Polska", "GPW Discord",
+    # Russian
+    "акции Discord", "трейдинг Discord", "инвестиции Discord сервер",
+    "форекс Discord", "биржа Discord",
+    # Ukrainian
+    "акції Discord", "трейдинг Discord Україна",
+    # Turkish
+    "Borsa Discord", "Hisse Discord", "BIST Discord", "Trading Discord Türkiye",
+    # Japanese
+    "株式 Discord", "株 Discord サーバー", "投資 Discord",
+    "デイトレード Discord", "FX Discord コミュニティ",
+    # Korean
+    "주식 Discord", "투자 Discord", "코스피 Discord", "단타 Discord",
+    # Chinese (Simplified)
+    "股票 Discord", "炒股 Discord", "投资 Discord群", "A股 Discord",
+    "美股 Discord 社区",
+    # Chinese (Traditional / Taiwan / HK)
+    "股票 Discord 群", "台股 Discord", "港股 Discord", "投資 Discord",
+    # Arabic
+    "الأسهم Discord", "تداول Discord", "الاستثمار Discord",
+    "سوق Discord", "فوركس Discord",
+    # Hindi
+    "शेयर बाजार Discord", "ट्रेडिंग Discord", "निवेश Discord",
+    "NIFTY Discord", "NSE Discord",
+    # Malay / Indonesian
+    "Saham Discord", "Investasi Discord", "Bursa Discord",
+    "Trading Discord Indonesia", "Trading Discord Malaysia",
+    # Thai
+    "หุ้น Discord", "ลงทุน Discord", "เทรด Discord",
+    # Vietnamese
+    "Chứng khoán Discord", "đầu tư Discord",
+    # Greek
+    "Χρηματιστήριο Discord", "Trading Discord Ελλάδα",
+    # Swedish / Norwegian / Danish / Finnish
+    "Aktier Discord", "Trading Discord Sverige",
+    "Aksjer Discord", "Investering Discord",
+    # Romanian / Czech / Hungarian
+    "Acțiuni Discord", "Trading Discord România",
+    "Akcie Discord", "Trading Discord Česko",
+    "Részvény Discord", "Trading Discord Magyarország",
+    # Appendage variants — combine with source names
+    "discord trading community hub",
+    "discord investors academy",
+    "discord traders club signals",
+    "discord market alerts group",
 ]
 
 # ── Database — Turso HTTP API (no native deps) ───────────────────
@@ -538,6 +629,72 @@ def clear_results_from_db(username):
     with get_db() as conn:
         conn.execute("DELETE FROM scrape_results WHERE username=?", (username,))
 
+# ── Keyword translation ───────────────────────────────────────────
+# Translates non-English keywords to English before saving to bank
+# so bank matching works across languages.
+# Results cached in memory to avoid repeated API calls.
+_translation_cache = {}
+
+def translate_to_english(keyword):
+    """
+    Translate a keyword to English using Claude API.
+    Returns the English version. If already English or API unavailable,
+    returns the original unchanged.
+    """
+    if not keyword or not ANTHROPIC_API_KEY:
+        return keyword
+
+    kw = keyword.strip().lower()
+
+    # Cache hit
+    if kw in _translation_cache:
+        return _translation_cache[kw]
+
+    # Quick check — if it's ASCII-only and short, likely already English
+    try:
+        kw.encode('ascii')
+        # ASCII — probably English, skip API call
+        _translation_cache[kw] = keyword
+        return keyword
+    except UnicodeEncodeError:
+        pass  # Non-ASCII — needs translation
+
+    try:
+        payload = json.dumps({
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 50,
+            "messages": [{
+                "role": "user",
+                "content": (
+                    f"Translate this search keyword to English. "
+                    f"Reply with ONLY the English translation, nothing else. "
+                    f"If it is already English, reply with it unchanged. "
+                    f"Keyword: {keyword}"
+                )
+            }]
+        }).encode()
+
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload,
+            headers={
+                "x-api-key":         ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type":      "application/json",
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        translated = data["content"][0]["text"].strip().lower()
+        _translation_cache[kw] = translated
+        logger.info(f"Translated keyword: '{keyword}' → '{translated}'")
+        return translated
+    except Exception as e:
+        logger.warning(f"Translation failed for '{keyword}': {e}")
+        _translation_cache[kw] = keyword  # Cache original on failure
+        return keyword
+
 # ── Global Server Bank ───────────────────────────────────────────
 BANK_SERVE_THRESHOLD  = 20   # if bank has >= this many matches, skip scraping
 BANK_SCRAPE_THRESHOLD = 10   # if bank has < this many matches, run scrape
@@ -570,11 +727,15 @@ def bank_search(keywords):
             except Exception:
                 pass
             stored_lower = [k.lower() for k in stored_kws]
-            if any(q in s or s in q for q in kw_lower for s in stored_lower):
+            # Only match if keywords are closely related (one contains the other)
+            # Prevents "crypto" matching "hotel crypto conference" style pollution
+            if any(q == s or q in s.split() or s in q.split()
+                   or (len(q) > 4 and q in s) or (len(s) > 4 and s in q)
+                   for q in kw_lower for s in stored_lower):
                 matched.append({
                     "code":     r["code"]    if isinstance(r, dict) else r[0],
                     "url":      r["url"]     if isinstance(r, dict) else r[1],
-                    "source":   (r["source"] if isinstance(r, dict) else r[2]) + " [bank]",
+                    "source":   r["source"] if isinstance(r, dict) else r[2],
                     "context":  r["context"] if isinstance(r, dict) else r[3],
                     "found_at": datetime.datetime.now().strftime("%H:%M:%S"),
                 })
@@ -928,10 +1089,14 @@ def scrape_reddit_subreddit(subreddit, limit=100):
         except Exception: continue
         posts = data.get("data", {}).get("children", [])
         for post in posts:
-            pd   = post.get("data", {})
-            text = pd.get("title","")+" "+pd.get("selftext","")+" "+pd.get("url","")
+            pd        = post.get("data", {})
+            text      = pd.get("title","")+" "+pd.get("selftext","")+" "+pd.get("url","")
+            created   = pd.get("created_utc", 0)
+            post_date = datetime.datetime.utcfromtimestamp(created).strftime("%Y-%m-%d") if created else ""
+            title     = pd.get("title","")[:65]
+            context   = f"{title} [{post_date}]" if post_date else title
             for code in extract_codes(text):
-                if add_result(code, f"Reddit r/{subreddit}", pd.get("title","")[:80]): found += 1
+                if add_result(code, f"Reddit r/{subreddit}", context): found += 1
         for post in posts[:15]:
             pd        = post.get("data", {})
             permalink = pd.get("permalink", "")
@@ -940,9 +1105,13 @@ def scrape_reddit_subreddit(subreddit, limit=100):
             if not chtml: continue
             try:
                 for c in json.loads(chtml)[1]["data"]["children"]:
-                    body = c.get("data", {}).get("body", "")
+                    cd        = c.get("data", {})
+                    body      = cd.get("body", "")
+                    created   = cd.get("created_utc", 0)
+                    post_date = datetime.datetime.utcfromtimestamp(created).strftime("%Y-%m-%d") if created else ""
+                    ctx       = f"{body[:60]} [{post_date}]" if post_date else body[:80]
                     for code in extract_codes(body):
-                        if add_result(code, f"Reddit r/{subreddit} comment", body[:80]): found += 1
+                        if add_result(code, f"Reddit r/{subreddit} comment", ctx): found += 1
             except Exception: pass
             time.sleep(1.2)
         time.sleep(random.uniform(4, 7))
@@ -1679,6 +1848,460 @@ def scrape_pastebin(keywords):
         time.sleep(random.uniform(4, 7))
     return found
 
+
+# ══════════════════════════════════════════════════════════════════
+# TIER 2 — FORUMS & STRUCTURED SITES
+# ══════════════════════════════════════════════════════════════════
+
+def scrape_forexfactory():
+    """ForexFactory.com — one of the largest forex forums on earth.
+    Public threads are scrapeable. Searches the community forum."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://www.forexfactory.com/"}
+    terms   = ["discord", "discord.gg", "discord server", "discord invite"]
+    for term in terms:
+        html = http_get(
+            f"https://www.forexfactory.com/search?q={urllib.parse.quote(term)}&o=0",
+            headers=headers, rate_wait=5
+        )
+        if not html: time.sleep(3); continue
+        for code in extract_codes(html):
+            if add_result(code, "ForexFactory", term): found += 1
+        time.sleep(random.uniform(4, 7))
+    # Also scrape the trading discussion and signal-services subforums
+    for forum_path in ["forex-signals", "trading-systems", "trading-discussion"]:
+        for page in range(1, 4):
+            html = http_get(
+                f"https://www.forexfactory.com/{forum_path}?page={page}",
+                headers=headers, rate_wait=5
+            )
+            if not html: break
+            for code in extract_codes(html):
+                if add_result(code, f"ForexFactory/{forum_path}", f"page {page}"): found += 1
+            time.sleep(random.uniform(3, 6))
+    return found
+
+def scrape_elitetrader():
+    """EliteTrader.com — professional traders forum with active Discord sharing."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://www.elitetrader.com/"}
+    forums  = ["trading", "forex-trading", "cryptocurrencies",
+               "prop-trading", "automated-trading", "options"]
+    for forum in forums:
+        for page in range(1, 4):
+            html = http_get(
+                f"https://www.elitetrader.com/et/forums/{forum}.{page}/",
+                headers=headers, rate_wait=5
+            )
+            if not html: break
+            for code in extract_codes(html):
+                if add_result(code, f"EliteTrader/{forum}", f"page {page}"): found += 1
+            time.sleep(random.uniform(3, 6))
+    return found
+
+def scrape_babypips():
+    """BabyPips.com — huge forex community forum, very active Discord sharing."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://community.babypips.com/"}
+    cats    = ["trading-systems", "free-forex-trading-systems",
+               "trading-discussion", "cryptocurrency"]
+    for cat in cats:
+        for page in range(1, 4):
+            html = http_get(
+                f"https://community.babypips.com/c/{cat}?page={page}",
+                headers=headers, rate_wait=4
+            )
+            if not html: break
+            for code in extract_codes(html):
+                if add_result(code, f"BabyPips/{cat}", f"page {page}"): found += 1
+            time.sleep(random.uniform(3, 5))
+    return found
+
+def scrape_bitcointalk():
+    """Bitcointalk.org — oldest crypto forum. Every altcoin project links Discord.
+    Hits the Altcoins, Tokens, and Speculation boards."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://bitcointalk.org/"}
+    boards  = [
+        ("67", "altcoins"),
+        ("159", "altcoin-discussion"),
+        ("238", "speculation"),
+        ("53",  "announcements-altcoins"),
+    ]
+    for board_id, board_name in boards:
+        for page in range(0, 3):
+            html = http_get(
+                f"https://bitcointalk.org/index.php?board={board_id}.{page*20}",
+                headers=headers, rate_wait=4
+            )
+            if not html: break
+            for code in extract_codes(html):
+                if add_result(code, f"Bitcointalk/{board_name}", f"page {page+1}"): found += 1
+            time.sleep(random.uniform(3, 6))
+    return found
+
+def scrape_coinmarketcap():
+    """CoinMarketCap — each coin's page has official Discord link in project info.
+    Scrapes the top coins by market cap and trending."""
+    found   = 0
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Referer":    "https://coinmarketcap.com/",
+        "Accept":     "application/json, text/plain, */*",
+    }
+    # CMC has a public API endpoint for listings
+    for start in [1, 101, 201, 301]:
+        html = http_get(
+            f"https://coinmarketcap.com/all/views/all/?start={start}",
+            headers=headers, rate_wait=4
+        )
+        if not html: time.sleep(3); continue
+        for code in extract_codes(html):
+            if add_result(code, "CoinMarketCap", f"top coins {start}-{start+100}"): found += 1
+        time.sleep(random.uniform(3, 5))
+    # Also scrape trending
+    html = http_get("https://coinmarketcap.com/trending-cryptocurrencies/",
+                    headers=headers, rate_wait=4)
+    if html:
+        for code in extract_codes(html):
+            if add_result(code, "CoinMarketCap/trending", "trending"): found += 1
+    return found
+
+def scrape_coingecko():
+    """CoinGecko — coin pages list official Discord. Public API + web pages."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://www.coingecko.com/"}
+    # Use CoinGecko's public coins list API
+    html = http_get(
+        "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1",
+        headers={"Accept": "application/json", "User-Agent": random.choice(USER_AGENTS)},
+        rate_wait=5
+    )
+    if html:
+        try:
+            coins = json.loads(html)
+            coin_ids = [c["id"] for c in coins[:50]]  # Top 50 by market cap
+            for coin_id in coin_ids:
+                chtml = http_get(
+                    f"https://api.coingecko.com/api/v3/coins/{coin_id}?localization=false&tickers=false&market_data=false&community_data=true",
+                    headers={"Accept": "application/json", "User-Agent": random.choice(USER_AGENTS)},
+                    rate_wait=3
+                )
+                if not chtml: continue
+                for code in extract_codes(chtml):
+                    if add_result(code, f"CoinGecko/{coin_id}", "coin page"): found += 1
+                time.sleep(random.uniform(1.5, 3))
+        except Exception as e:
+            logger.warning(f"CoinGecko error: {e}")
+    return found
+
+def scrape_quora():
+    """Quora — trading/investing Q&A pages have direct Discord links in answers."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://www.quora.com/"}
+    queries = [
+        "best-Discord-server-for-forex-trading",
+        "best-Discord-server-for-stock-trading",
+        "best-Discord-server-for-crypto-trading",
+        "best-Discord-trading-community",
+        "best-Discord-server-for-options-trading",
+        "best-Discord-server-for-day-trading",
+    ]
+    for q in queries:
+        html = http_get(
+            f"https://www.quora.com/{q}",
+            headers=headers, rate_wait=5
+        )
+        if not html: time.sleep(3); continue
+        for code in extract_codes(html):
+            if add_result(code, "Quora", q.replace("-", " ")): found += 1
+        time.sleep(random.uniform(4, 7))
+    return found
+
+def scrape_substack():
+    """Substack finance newsletters — about pages and posts list Discord communities."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://substack.com/"}
+    # Substack has a discovery page for finance newsletters
+    for cat in ["finance", "investing", "crypto"]:
+        html = http_get(
+            f"https://substack.com/browse/{cat}?utm_source=discover",
+            headers=headers, rate_wait=4
+        )
+        if not html: continue
+        for code in extract_codes(html):
+            if add_result(code, f"Substack/{cat}", "newsletter discovery"): found += 1
+        time.sleep(random.uniform(3, 5))
+    # Also search Substack
+    for term in ["trading discord", "forex discord", "crypto discord", "investing discord"]:
+        html = http_get(
+            f"https://substack.com/search?query={urllib.parse.quote(term)}&type=post",
+            headers=headers, rate_wait=4
+        )
+        if not html: continue
+        for code in extract_codes(html):
+            if add_result(code, "Substack/search", term): found += 1
+        time.sleep(random.uniform(3, 5))
+    return found
+
+# ══════════════════════════════════════════════════════════════════
+# TIER 3 — INTERNATIONAL & INDIGENOUS PLATFORMS
+# ══════════════════════════════════════════════════════════════════
+
+def scrape_hotcopper():
+    """HotCopper.com — largest Australian stock market forum. Very active.
+    Public threads, completely untapped by other scrapers."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://hotcopper.com.au/"}
+    for page in range(1, 5):
+        html = http_get(
+            f"https://hotcopper.com.au/threads/?page={page}",
+            headers=headers, rate_wait=4
+        )
+        if not html: break
+        for code in extract_codes(html):
+            if add_result(code, "HotCopper", f"page {page}"): found += 1
+        time.sleep(random.uniform(3, 5))
+    return found
+
+def scrape_smartlab():
+    """Smart-lab.ru — largest Russian-language trading community.
+    Completely untapped. Public blog posts and forum threads."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://smart-lab.ru/",
+                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"}
+    for path in ["blog/all/", "forum/", "blog/trades/"]:
+        for page in range(1, 4):
+            html = http_get(
+                f"https://smart-lab.ru/{path}page{page}/",
+                headers=headers, rate_wait=4
+            )
+            if not html: break
+            for code in extract_codes(html):
+                if add_result(code, f"Smart-lab.ru/{path}", f"page {page}"): found += 1
+            time.sleep(random.uniform(3, 5))
+    return found
+
+def scrape_nairaland():
+    """Nairaland.com — Nigeria's largest forum with 3M+ members.
+    Investment and Business sections have active Discord sharing."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://www.nairaland.com/"}
+    sections = ["investment", "business", "phones", "crypto"]
+    for section in sections:
+        for page in range(0, 4):
+            html = http_get(
+                f"https://www.nairaland.com/{section}/{page}",
+                headers=headers, rate_wait=4
+            )
+            if not html: break
+            for code in extract_codes(html):
+                if add_result(code, f"Nairaland/{section}", f"page {page+1}"): found += 1
+            time.sleep(random.uniform(3, 5))
+    return found
+
+def scrape_valuePickr():
+    """ValuePickr.com — Indian stock market community. High-quality discussions."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://forum.valuepickr.com/"}
+    for cat in ["portfolio-management", "stock-opportunities", "trading"]:
+        html = http_get(
+            f"https://forum.valuepickr.com/c/{cat}.json",
+            headers={**headers, "Accept": "application/json"}, rate_wait=4
+        )
+        if not html: continue
+        for code in extract_codes(html):
+            if add_result(code, f"ValuePickr/{cat}", "indian stock community"): found += 1
+        time.sleep(random.uniform(3, 5))
+    return found
+
+def scrape_traderji():
+    """Traderji.com — India's oldest trading forum."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://www.traderji.com/"}
+    for cat in ["equity", "derivatives", "forex", "commodities"]:
+        for page in range(1, 4):
+            html = http_get(
+                f"https://www.traderji.com/community/forums/{cat}.{page}/",
+                headers=headers, rate_wait=4
+            )
+            if not html: break
+            for code in extract_codes(html):
+                if add_result(code, f"Traderji/{cat}", f"page {page}"): found += 1
+            time.sleep(random.uniform(3, 5))
+    return found
+
+def scrape_myfxbook():
+    """Myfxbook.com — forex performance tracking community with active forum."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://www.myfxbook.com/"}
+    for page in range(1, 5):
+        html = http_get(
+            f"https://www.myfxbook.com/community/general?page={page}",
+            headers=headers, rate_wait=4
+        )
+        if not html: break
+        for code in extract_codes(html):
+            if add_result(code, "Myfxbook", f"page {page}"): found += 1
+        time.sleep(random.uniform(3, 5))
+    return found
+
+def scrape_investagrams():
+    """Investagrams.com — Philippine stock community. Public posts with Discord links."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://www.investagrams.com/"}
+    html = http_get(
+        "https://www.investagrams.com/Social",
+        headers=headers, rate_wait=4
+    )
+    if html:
+        for code in extract_codes(html):
+            if add_result(code, "Investagrams", "PH stock community"): found += 1
+    return found
+
+def scrape_wallstonline():
+    """Wallstreet-Online.de — Germany's largest stock market community."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://www.wallstreet-online.de/",
+                "Accept-Language": "de-DE,de;q=0.9,en;q=0.8"}
+    for cat in ["trading", "fonds-etfs", "zertifikate"]:
+        for page in range(1, 4):
+            html = http_get(
+                f"https://www.wallstreet-online.de/community/{cat}?page={page}",
+                headers=headers, rate_wait=4
+            )
+            if not html: break
+            for code in extract_codes(html):
+                if add_result(code, f"WallstOnline/{cat}", f"DE page {page}"): found += 1
+            time.sleep(random.uniform(3, 5))
+    return found
+
+def scrape_boursorama():
+    """Boursorama.com — France's largest financial community."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://www.boursorama.com/",
+                "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8"}
+    for forum in ["trading", "devises", "cryptomonnaies"]:
+        for page in range(1, 4):
+            html = http_get(
+                f"https://www.boursorama.com/forum/{forum}?page={page}",
+                headers=headers, rate_wait=4
+            )
+            if not html: break
+            for code in extract_codes(html):
+                if add_result(code, f"Boursorama/{forum}", f"FR page {page}"): found += 1
+            time.sleep(random.uniform(3, 5))
+    return found
+
+def scrape_xueqiu():
+    """Xueqiu.com (雪球) — China's largest stock community. Public posts."""
+    found   = 0
+    headers = {
+        "User-Agent":      random.choice(USER_AGENTS),
+        "Referer":         "https://xueqiu.com/",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    for topic in ["discord", "discord.gg", "股票discord"]:
+        html = http_get(
+            f"https://xueqiu.com/search/query.json?queryType=post&q={urllib.parse.quote(topic)}&count=20",
+            headers={**headers, "Accept": "application/json"}, rate_wait=5
+        )
+        if not html: continue
+        for code in extract_codes(html):
+            if add_result(code, "Xueqiu/雪球", topic): found += 1
+        time.sleep(random.uniform(4, 6))
+    return found
+
+def scrape_stockhouse():
+    """StockHouse.com — Canadian stock market community."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://stockhouse.com/"}
+    for board in ["marijuana-stocks", "tsx-venture", "mining"]:
+        html = http_get(
+            f"https://stockhouse.com/opinion/bullboards/trending",
+            headers=headers, rate_wait=4
+        )
+        if not html: break
+        for code in extract_codes(html):
+            if add_result(code, "StockHouse", "CA community"): found += 1
+        time.sleep(random.uniform(3, 5))
+    return found
+
+def scrape_coinGeckoNFT():
+    """CoinGecko NFT section — NFT collection pages list Discord invites."""
+    found   = 0
+    headers = {"Accept": "application/json", "User-Agent": random.choice(USER_AGENTS)}
+    html = http_get(
+        "https://api.coingecko.com/api/v3/nfts/list?per_page=100&page=1",
+        headers=headers, rate_wait=5
+    )
+    if not html: return 0
+    try:
+        nfts = json.loads(html)
+        for nft in nfts[:30]:
+            nft_id = nft.get("id","")
+            if not nft_id: continue
+            dhtml = http_get(
+                f"https://api.coingecko.com/api/v3/nfts/{nft_id}",
+                headers=headers, rate_wait=3
+            )
+            if not dhtml: continue
+            for code in extract_codes(dhtml):
+                if add_result(code, f"CoinGecko/NFT:{nft_id}", "nft collection"): found += 1
+            time.sleep(random.uniform(1.5, 3))
+    except Exception as e:
+        logger.warning(f"CoinGecko NFT error: {e}")
+    return found
+
+def scrape_mirror_xyz():
+    """Mirror.xyz — Web3 blogging. Every project posts Discord links."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://mirror.xyz/"}
+    for tag in ["defi", "nft", "trading", "crypto", "dao"]:
+        html = http_get(
+            f"https://mirror.xyz/tag/{tag}",
+            headers=headers, rate_wait=4
+        )
+        if not html: continue
+        for code in extract_codes(html):
+            if add_result(code, f"Mirror.xyz/{tag}", "web3 blog"): found += 1
+        time.sleep(random.uniform(3, 5))
+    return found
+
+def scrape_producthunt():
+    """Product Hunt — fintech/trading tools listed here link to Discord communities."""
+    found   = 0
+    headers = {"User-Agent": random.choice(USER_AGENTS),
+                "Referer": "https://www.producthunt.com/"}
+    for topic in ["finance", "crypto", "investing", "trading"]:
+        html = http_get(
+            f"https://www.producthunt.com/topics/{topic}",
+            headers=headers, rate_wait=4
+        )
+        if not html: continue
+        for code in extract_codes(html):
+            if add_result(code, f"ProductHunt/{topic}", "fintech product"): found += 1
+        time.sleep(random.uniform(3, 5))
+    return found
+
 # ── Orchestrator ──────────────────────────────────────────────────
 def run_scrape(config, username):
     _tl.username = username
@@ -1700,7 +2323,9 @@ def run_scrape(config, username):
         log(f"👤 {username} — {hist['total_seen']} total seen, {hist['active']} blocked (<{SERVER_EXPIRY_DAYS}d)")
 
         # ── Bank check ────────────────────────────────────────────
-        bank_results = bank_search(keywords)
+        # Translate keywords to English for bank matching
+        translated_search_kws = [translate_to_english(k) for k in keywords]
+        bank_results = bank_search(translated_search_kws)
         # Filter out servers already seen by this user
         bank_results = [r for r in bank_results if is_fresh_for_user(r["code"], username)]
         log(f"🏦 Bank: {len(bank_results)} fresh matching servers found")
@@ -1768,6 +2393,38 @@ def run_scrape(config, username):
             n = scrape_reddit_search(keywords[:4] if depth == "quick" else keywords)
             log(f"  → {n} new from Reddit search")
         if "reddit_extra"  in sources: log("🔍 Scraping Reddit extra keywords…");  n = scrape_reddit_extra_keywords(keywords);                                     log(f"  → {n} new")
+
+        # ── TIER 2 — Forums & Structured Sites ───────────────────
+        # Run every 3rd scrape to balance bandwidth usage
+        scrape_count = get_bank_stats() // 20  # rough proxy for run count
+        run_tier2    = (scrape_count % 3 == 0)
+        run_tier3    = (scrape_count % 7 == 0)
+
+        if run_tier2 or "forexfactory"  in sources: log("🔍 Scraping ForexFactory…");     n = scrape_forexfactory();    log(f"  → {n} new")
+        if run_tier2 or "elitetrader"   in sources: log("🔍 Scraping EliteTrader…");      n = scrape_elitetrader();     log(f"  → {n} new")
+        if run_tier2 or "babypips"      in sources: log("🔍 Scraping BabyPips…");         n = scrape_babypips();        log(f"  → {n} new")
+        if run_tier2 or "bitcointalk"   in sources: log("🔍 Scraping Bitcointalk…");      n = scrape_bitcointalk();     log(f"  → {n} new")
+        if run_tier2 or "coinmarketcap" in sources: log("🔍 Scraping CoinMarketCap…");    n = scrape_coinmarketcap();   log(f"  → {n} new")
+        if run_tier2 or "coingecko"     in sources: log("🔍 Scraping CoinGecko…");        n = scrape_coingecko();       log(f"  → {n} new")
+        if run_tier2 or "quora"         in sources: log("🔍 Scraping Quora…");            n = scrape_quora();           log(f"  → {n} new")
+        if run_tier2 or "substack"      in sources: log("🔍 Scraping Substack…");         n = scrape_substack();        log(f"  → {n} new")
+        if run_tier2 or "myfxbook"      in sources: log("🔍 Scraping Myfxbook…");         n = scrape_myfxbook();        log(f"  → {n} new")
+        if run_tier2 or "producthunt"   in sources: log("🔍 Scraping Product Hunt…");     n = scrape_producthunt();     log(f"  → {n} new")
+
+        # ── TIER 3 — International & Indigenous Platforms ─────────
+        # Run every 7th scrape — high yield, slower
+        if run_tier3 or "hotcopper"     in sources: log("🔍 Scraping HotCopper (AU)…");   n = scrape_hotcopper();       log(f"  → {n} new")
+        if run_tier3 or "smartlab"      in sources: log("🔍 Scraping Smart-lab (RU)…");   n = scrape_smartlab();        log(f"  → {n} new")
+        if run_tier3 or "nairaland"     in sources: log("🔍 Scraping Nairaland (NG)…");   n = scrape_nairaland();       log(f"  → {n} new")
+        if run_tier3 or "valuepickr"    in sources: log("🔍 Scraping ValuePickr (IN)…");  n = scrape_valuePickr();      log(f"  → {n} new")
+        if run_tier3 or "traderji"      in sources: log("🔍 Scraping Traderji (IN)…");    n = scrape_traderji();        log(f"  → {n} new")
+        if run_tier3 or "wallstonline"  in sources: log("🔍 Scraping WallstOnline (DE)…");n = scrape_wallstonline();    log(f"  → {n} new")
+        if run_tier3 or "boursorama"    in sources: log("🔍 Scraping Boursorama (FR)…");  n = scrape_boursorama();      log(f"  → {n} new")
+        if run_tier3 or "xueqiu"        in sources: log("🔍 Scraping Xueqiu 雪球 (CN)…"); n = scrape_xueqiu();          log(f"  → {n} new")
+        if run_tier3 or "stockhouse"    in sources: log("🔍 Scraping StockHouse (CA)…");  n = scrape_stockhouse();      log(f"  → {n} new")
+        if run_tier3 or "investagrams"  in sources: log("🔍 Scraping Investagrams (PH)…");n = scrape_investagrams();    log(f"  → {n} new")
+        if run_tier3 or "mirroxyz"      in sources: log("🔍 Scraping Mirror.xyz…");       n = scrape_mirror_xyz();      log(f"  → {n} new")
+        if run_tier3 or "coingeckonft"  in sources: log("🔍 Scraping CoinGecko NFTs…");   n = scrape_coinGeckoNFT();    log(f"  → {n} new")
 
             # Merge bank results with scraped results
         if bank_results:

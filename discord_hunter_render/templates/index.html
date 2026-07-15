@@ -68,10 +68,6 @@ select{cursor:pointer}
 .btn-ghost{background:transparent;border:1px solid var(--border2);color:var(--muted)}
 .btn-ghost:hover{border-color:var(--border3);color:var(--text)}
 
-.tag-wrap{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
-.tag{background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:3px 9px;font-size:11px;font-family:var(--mono);color:var(--muted);cursor:pointer;transition:all 0.12s;display:flex;align-items:center;gap:5px}
-.tag.selected{background:rgba(88,101,242,0.12);border-color:rgba(88,101,242,0.35);color:#a5b4fc}
-.tag .tag-x{color:var(--subtle);font-size:10px}
 
 .main{display:flex;flex-direction:column;gap:14px}
 
@@ -128,7 +124,7 @@ td{padding:9px 14px;vertical-align:middle}
 .empty-state .es-icon{font-size:36px;margin-bottom:12px}
 .empty-state p{font-size:13px}
 
-#no-credits-banner{display:none;background:rgba(237,66,69,0.08);border:1px solid rgba(237,66,69,0.3);border-radius:10px;padding:12px 16px;font-size:13px;color:var(--red);align-items:center;gap:10px}
+
 
 #toast{position:fixed;bottom:24px;right:24px;background:var(--bg3);border:1px solid var(--border2);border-radius:10px;padding:10px 16px;font-size:13px;z-index:9999;transform:translateY(20px);opacity:0;transition:all 0.2s;pointer-events:none}
 #toast.show{transform:translateY(0);opacity:1}
@@ -230,14 +226,12 @@ td{padding:9px 14px;vertical-align:middle}
       </div>
       <div class="panel-body">
         <div class="form-row">
-          <label>Keywords (press Enter)</label>
-          <input type="text" id="kw-input" placeholder="e.g. prop firm signals…" enterkeyhint="done" inputmode="text">
-          <div class="tag-wrap" id="kw-tags"></div>
+          <label>Keyword</label>
+          <input type="text" id="kw-input" placeholder="e.g. prop firm signals" inputmode="text">
         </div>
         <div class="form-row" style="margin-top:10px">
-          <label>Subreddits (press Enter)</label>
-          <input type="text" id="sub-input" placeholder="e.g. TradingView" enterkeyhint="done" inputmode="text">
-          <div class="tag-wrap" id="sub-tags"></div>
+          <label>Subreddit (optional)</label>
+          <input type="text" id="sub-input" placeholder="e.g. Daytrading" inputmode="text">
         </div>
       </div>
     </div>
@@ -313,49 +307,11 @@ td{padding:9px 14px;vertical-align:middle}
 <script>
 const state = { keywords: [], subreddits: [], polling: null, results: [] };
 
-function setupTagInput(inputId, tagsId, arr) {
-  const input = document.getElementById(inputId);
-  const wrap  = document.getElementById(tagsId);
-
-  function addTag() {
-    const val = input.value.trim();
-    if (!val) return;
-    if (!arr.includes(val)) { arr.push(val); renderTags(wrap, arr); }
-    input.value = '';
-  }
-
-  // Desktop Enter key
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); addTag(); }
-  });
-
-  // Android: keyboard fires keyup with Enter or uses compositionend
-  input.addEventListener('keyup', e => {
-    if (e.key === 'Enter') { e.preventDefault(); addTag(); }
-  });
-
-  // Android fallback: detect newline character injected into value
-  input.addEventListener('input', e => {
-    if (input.value.includes('\n') || input.value.includes('\r')) {
-      input.value = input.value.replace(/[\r\n]/g, '');
-      addTag();
-    }
-  });
-}
-function renderTags(wrap, arr) {
-  wrap.innerHTML = arr.map((t, i) =>
-    `<div class="tag selected" onclick="removeTag(${i},'${wrap.id}')">${esc(t)} <span class="tag-x">✕</span></div>`
-  ).join('');
-}
-function removeTag(i, wrapId) {
-  const arr = wrapId === 'kw-tags' ? state.keywords : state.subreddits;
-  arr.splice(i, 1);
-  renderTags(document.getElementById(wrapId), arr);
-}
-setupTagInput('kw-input',  'kw-tags',  state.keywords);
-setupTagInput('sub-input', 'sub-tags', state.subreddits);
+// Plain single inputs — no tagging to keep bank keyword data clean
 
 function startScrape() {
+  const kw  = document.getElementById('kw-input').value.trim();
+  const sub = document.getElementById('sub-input').value.trim();
   const sources = [];
   if (document.getElementById('src-reddit').checked)         sources.push('reddit');
   if (document.getElementById('src-reddit_extra').checked)   sources.push('reddit_extra');
@@ -393,8 +349,8 @@ function startScrape() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       sources,
-      keywords:   state.keywords,
-      subreddits: state.subreddits,
+      keywords:   kw  ? [kw]  : [],
+      subreddits: sub ? [sub] : [],
       depth:      document.getElementById('depth').value,
     })
   }).then(r => r.json()).then(d => {
@@ -413,35 +369,34 @@ function startScrape() {
 }
 
 function showNoCreditsBanner() {
-  document.getElementById('no-credits-banner').style.display = 'flex';
+  // Banner removed from UI — just disable the button silently
   document.getElementById('start-btn').disabled = true;
 }
 
 function updateCreditsDisplay(credits, unlimited) {
-  const el     = document.getElementById('stat-credits');
-  const card   = document.getElementById('credits-card');
-  const btn    = document.getElementById('start-btn');
-  const banner = document.getElementById('no-credits-banner');
+  const el   = document.getElementById('stat-credits');
+  const card = document.getElementById('credits-card');
+  const btn  = document.getElementById('start-btn');
+  if (!el) return;
   if (unlimited) {
     el.textContent = '∞';
     el.style.color = 'var(--green)';
-    card.style.borderColor = 'rgba(59,165,92,0.3)';
-    btn.disabled = false;
-    banner.style.display = 'none';
+    if (card) card.style.borderColor = 'rgba(59,165,92,0.3)';
+    if (btn)  btn.disabled = false;
   } else {
     el.textContent = credits;
     if (credits <= 0) {
       el.style.color = 'var(--red)';
-      card.style.borderColor = 'rgba(237,66,69,0.4)';
-      showNoCreditsBanner();
+      if (card) card.style.borderColor = 'rgba(237,66,69,0.4)';
+      if (btn)  btn.disabled = true;
     } else if (credits <= 3) {
       el.style.color = 'var(--yellow)';
-      card.style.borderColor = 'rgba(250,166,26,0.3)';
-      btn.disabled = false; banner.style.display = 'none';
+      if (card) card.style.borderColor = 'rgba(250,166,26,0.3)';
+      if (btn)  btn.disabled = false;
     } else {
       el.style.color = 'var(--accent)';
-      card.style.borderColor = 'rgba(88,101,242,0.3)';
-      btn.disabled = false; banner.style.display = 'none';
+      if (card) card.style.borderColor = 'rgba(88,101,242,0.3)';
+      if (btn)  btn.disabled = false;
     }
   }
 }

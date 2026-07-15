@@ -21,3 +21,5 @@ services:
         sync: false
       - key: WEBSHARE_PASS
         sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false

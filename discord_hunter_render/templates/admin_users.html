@@ -88,6 +88,12 @@ td{padding:9px 12px;vertical-align:middle}
   <a href="/" class="back">← Back to app</a>
 </header>
 <div class="container">
+  <div class="panel" style="margin-bottom:16px">
+    <div class="panel-body" style="display:flex;align-items:center;gap:28px;padding:12px 18px;flex-wrap:wrap">
+      <div style="font-size:12px;color:var(--muted)">🏦 Bank size: <strong style="color:var(--text);font-family:var(--mono)" id="admin-bank-count">—</strong></div>
+      <div style="font-size:12px;color:var(--muted)">👥 Users: <strong style="color:var(--text);font-family:var(--mono)" id="admin-user-count">—</strong></div>
+    </div>
+  </div>
 
   <!-- Add user -->
   <div class="panel">
@@ -218,6 +224,7 @@ async function loadUsers() {
   const data = await res.json();
   const tbody  = document.getElementById('users-tbody');
   const entries = Object.entries(data);
+  document.getElementById('admin-user-count').textContent = entries.length;
   if (!entries.length) {
     tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No users</td></tr>';
     return;
@@ -402,6 +409,18 @@ function esc(s) {
 }
 
 loadUsers();
+
+// Load bank and user counts
+async function loadAdminStats() {
+  try {
+    const d = await fetch('/api/bank/stats').then(r => r.json());
+    document.getElementById('admin-bank-count').textContent = (d.total || 0).toLocaleString();
+  } catch(e) {}
+}
+loadAdminStats();
+
+// Also update user count after loadUsers
+const _origLoadUsers = loadUsers;
 </script>
 </body>
 </html>
